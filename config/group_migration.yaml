@@ -6,14 +6,14 @@ account_host: "https://accounts.azuredatabricks.net"
 # The governed workspaces (from the dbx-platform-infra-azure workspace stacks: workspace_id and workspace_url).
 workspaces:
   dev:
-    workspace_id: "<dev-workspace-id>"
-    host: "https://adb-<dev-workspace-id>.<n>.azuredatabricks.net"
+    workspace_id: "7405609089943919"
+    host: "https://adb-7405609089943919.19.azuredatabricks.net"
   uat:
-    workspace_id: "<uat-workspace-id>"
-    host: "https://adb-<uat-workspace-id>.<n>.azuredatabricks.net"
+    workspace_id: "7405605496889455"
+    host: "https://adb-7405605496889455.15.azuredatabricks.net"
   prod:
-    workspace_id: "<prod-workspace-id>"
-    host: "https://adb-<prod-workspace-id>.<n>.azuredatabricks.net"
+    workspace_id: "7405604784566671"
+    host: "https://adb-7405604784566671.11.azuredatabricks.net"
 
 naming:
   # Account group name for a local group. Must contain {group} and {env}: the same local group name in dev, uat and
