@@ -83,6 +83,10 @@ databricks secrets put-acl governance <sp-application-id> READ
 
 Clear the commands from your shell history afterwards if they contained the secret.
 
+The governance workspace's bootstrap already created a scope, `sct_dbx_architect_lab`. You can put the three secrets
+there instead (skip `create-scope`, use that name in the other commands) and set `credentials.scope` in
+`config/group_migration.yaml` to it.
+
 ### 3.4 Let it write the inventory tables
 
 The job creates the schema `identity` and four tables in the governance catalog on its first run (section 6.1). Grant
