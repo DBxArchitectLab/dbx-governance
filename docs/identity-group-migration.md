@@ -43,7 +43,7 @@ local groups, one environment at a time.**
 | You are a Databricks **account admin** (for the setup in section 3) | Account console opens, and User management shows the Roles tab |
 | Databricks CLI 0.230 or later | `databricks --version` |
 | Workspace IDs and URLs of dev, uat, prod and the governance workspace | Outputs `workspace_id` and `workspace_url` of the `dbx-platform-infra-azure` workspace stacks, or the account console → Workspaces |
-| A Unity Catalog schema for the run report (optional) | For example `governance.identity` in the governance workspace |
+| The governance workspace's catalog, for the inventory tables | `dbxarchitectlab_governance` (created by the governance workspace's bootstrap stack) |
 
 ## 3. One-time setup
 
@@ -83,7 +83,18 @@ databricks secrets put-acl governance <sp-application-id> READ
 
 Clear the commands from your shell history afterwards if they contained the secret.
 
-### 3.4 Fill in the configuration
+### 3.4 Let it write the inventory tables
+
+The job creates the schema `identity` and four tables in the governance catalog on its first run (section 6.1). Grant
+the service principal what that needs, in the governance workspace's SQL editor:
+
+```sql
+GRANT USE CATALOG, CREATE SCHEMA ON CATALOG dbxarchitectlab_governance TO `<sp-application-id>`;
+```
+
+Once the schema exists, it owns it, so it can create and append to the tables.
+
+### 3.5 Fill in the configuration
 
 `config/group_migration.yaml`:
 
@@ -96,18 +107,23 @@ workspaces:
   prod: { ... }
 ```
 
-Decide the naming policy before the first apply. It is hard to change once account groups exist:
+Decide the naming template before the first apply. It is hard to change once account groups exist. It must contain
+both `{group}` and `{env}`, so the same local group name in dev, uat and prod always becomes three separate account
+groups; the job refuses to start otherwise.
 
-| `naming.template` | Result for `data_engineers` in prod | Use when |
-| --- | --- | --- |
-| `{group}_{env}` (default) | `data_engineers_prod` | Members differ between environments (the usual case) |
-| `{env}_{group}` | `prod_data_engineers` | Same, if you prefer the environment first |
-| `{group}` | `data_engineers` | The group has the same members in every workspace and should be one account group |
+| `naming.template` | `data_engineers` in dev, uat, prod becomes |
+| --- | --- |
+| `{group}_{env}` (default) | `data_engineers_dev`, `data_engineers_uat`, `data_engineers_prod` |
+| `{env}_{group}` | `dev_data_engineers`, `uat_data_engineers`, `prod_data_engineers` |
 
-With `{group}`, the job checks that the memberships really are identical and stops a group if they aren't.
+Other settings:
 
-Optionally, set `report_table: "governance.identity.group_migration_log"` to keep a history of every run, and list any
-local group to leave untouched under `exclude_groups`.
+- `inventory.catalog` / `inventory.schema`: where the inventory tables go (default
+  `dbxarchitectlab_governance.identity`).
+- `exclude_groups`: local groups to leave untouched.
+- `adopt_account_groups`: account groups that **already exist** and should be used as a target anyway (for example,
+  `data_engineers_prod` was created by hand last year). Without this, an existing account group that the migration
+  didn't create stops that group, so nothing is taken over by accident. Leave it empty unless plan reports one.
 
 `databricks.yml`: set the governance workspace `host` and `run_as.service_principal_name` (the application ID).
 
@@ -169,23 +185,73 @@ in code, documentation) needs the new name.
 The run's output (the task's **Output** tab) lists each local group, then a summary:
 
 ```
-[dev] data_engineers -> data_engineers_dev  (12 members, entitlements: databricks-sql-access, workspace-access)
-    WOULD create account group data_engineers_dev
-    WOULD add 12 member(s)
-    WOULD assign data_engineers_dev to workspace 1234567890123456 (USER)
-    WOULD copy entitlements: databricks-sql-access, workspace-access
-    WOULD migrate workspace object permissions data_engineers -> data_engineers_dev
+[dev] analysts -> analysts_dev  (4 members, nested local groups: none, entitlements: workspace-access)  PLANNED
+    WOULD create_group: analysts_dev
+    WOULD add_members: 4 member(s)
+    WOULD assign: analysts_dev to workspace 1234567890123456 (USER)
+    WOULD entitlements: workspace-access
+    WOULD migrate_permissions: analysts -> analysts_dev
 
-[dev] legacy_analysts -> legacy_analysts_dev  (3 members, entitlements: none)
+[dev] data_engineers -> data_engineers_dev  (12 members, nested local groups: analysts, entitlements: ...)  PLANNED
     ...
-    PROBLEM user 'old.user@example.com' not found at the account; not added
 
-2 workspace-local group(s) in dev; mode plan.
+[dev] legacy_ops -> legacy_ops_dev  (3 members, nested local groups: none, entitlements: none)  BLOCKED
+    PROBLEM account group 'legacy_ops_dev' already exists and was not created by this migration; ...
+
+Run 5f0c...: 3 workspace-local group(s) in dev, mode plan, 1 blocked. Inventory: `dbxarchitectlab_governance`.`identity`.
 ```
 
-- `WOULD` appears in plan mode only. In apply mode the same lines are what was done, plus `N permission(s) migrated`.
-- A group with a `PROBLEM` is skipped in apply mode, and the run ends as failed so you can't miss it.
-- A second apply of the same environment shows no `create` or `add` lines: everything is already in place.
+- Groups are listed in migration order: nested local groups before the groups that contain them (`analysts` before
+  `data_engineers` above).
+- `WOULD` appears in plan mode only. In apply mode the same lines are what was done, and `migrate_permissions` ends
+  with the number of permissions moved.
+- A group with a `PROBLEM` is `BLOCKED`: apply skips it, skips every group that contains it, and the run ends as failed
+  so you can't miss it.
+- In plan mode, a parent's member count can be one lower than in apply: a nested group's account group doesn't exist
+  yet, so it can't be counted. Apply creates it first.
+- A second apply of the same environment shows no `create_group` or `add_members` lines: everything is in place.
+
+### 6.1 The inventory tables
+
+Every run, plan or apply, appends to four tables in `dbxarchitectlab_governance.identity` (from `inventory` in the
+config; created on the first run). Each run has its own `run_id`, printed at the end of the output.
+
+| Table | One row per | Key columns |
+| --- | --- | --- |
+| `local_groups` | local group per run | `env`, `local_group`, `account_group`, `account_group_id`, `member_count`, `nested_local_groups`, `entitlements`, `status`, `problems` |
+| `local_group_members` | member per local group per run | `local_group`, `member_kind` (`user`, `service_principal`, `group`), `member_key`, `nested_local_group` |
+| `migration_actions` | step per group per run | `seq`, `step`, `detail`, `mode` |
+| `account_group_registry` | account group the migration created | `account_group`, `account_group_id`, `env`, `source_local_group`, `created_by_run_id` |
+
+`status` is `planned` (plan mode), `migrated`, `local_group_deleted`, or `blocked`.
+
+The current inventory: every local group as of the latest run in each environment:
+
+```sql
+SELECT env, local_group, account_group, member_count, nested_local_groups, status, problems
+FROM dbxarchitectlab_governance.identity.local_groups
+QUALIFY run_at = MAX(run_at) OVER (PARTITION BY env)
+ORDER BY env, local_group;
+```
+
+What a run did, step by step:
+
+```sql
+SELECT env, local_group, seq, step, detail
+FROM dbxarchitectlab_governance.identity.migration_actions
+WHERE run_id = '<run_id from the output>'
+ORDER BY env, local_group, seq;
+```
+
+The account groups the migration owns:
+
+```sql
+SELECT account_group, env, source_local_group, created_at
+FROM dbxarchitectlab_governance.identity.account_group_registry
+ORDER BY env, account_group;
+```
+
+The registry is what lets a later run reuse an account group the migration created. Don't delete rows from it.
 
 ## 7. Check each environment
 
@@ -200,14 +266,17 @@ After each apply, in the migrated workspace:
 | Real access | Ask one member of each group to open a job, run a notebook, query a warehouse | Works as before |
 | Local groups left | Workspace → Settings → Identity and access → Groups | Each local group is still there (or renamed `db-temp-<name>`) until section 8 |
 
-If the run report is on, the same facts are in the table:
+Compare the members the migration recorded with the account group (the account console's member list), from the
+latest apply in the environment:
 
 ```sql
-SELECT run_at, env, local_group, account_group, members, actions, problems
-FROM governance.identity.group_migration_log
-WHERE mode = 'apply'
-ORDER BY run_at DESC, env, local_group;
+SELECT local_group, member_kind, member_key
+FROM dbxarchitectlab_governance.identity.local_group_members
+QUALIFY run_at = MAX(run_at) OVER (PARTITION BY env) AND env = 'dev'
+ORDER BY local_group, member_kind, member_key;
 ```
+
+Every group of that run should have `status = 'migrated'` in `local_groups`.
 
 Then grant the new account groups in Unity Catalog where needed. Unity Catalog never accepted workspace-local
 groups, so there is nothing to migrate there, but the account groups are now usable in grants.
@@ -218,7 +287,7 @@ Only after section 7 passes for that environment, and preferably after a few day
 
 ```bash
 databricks bundle run -t governance identity_group_migration \
-  --params mode=plan,environments=dev,delete_local_groups=true   # check the "delete local group" lines
+  --params mode=plan,environments=dev,delete_local_groups=true   # check the "delete_local" lines
 databricks bundle run -t governance identity_group_migration \
   --params mode=apply,environments=dev,delete_local_groups=true
 ```
@@ -241,7 +310,7 @@ To pause it during the migration: **Workflows → identity-local-group-drift-che
 
 | Situation | What to do |
 | --- | --- |
-| An apply run failed half-way | Fix the cause (section 11) and run the same apply again. Every step checks what exists first, so nothing is duplicated |
+| An apply run failed half-way | Fix the cause (section 11) and run the same apply again. Every step checks what exists first, and each account group was registered the moment it was created, so the re-run reuses it instead of stopping on it. The inventory tables still record the failed run |
 | Users lost access after apply, local group not yet deleted | Find the object in section 7's checks, add the missing permission to `<group>_<env>`, and note the object type so the other environments can be checked for it. The local group still exists with its members, so you can also grant it back temporarily |
 | A local group was renamed to `db-temp-<name>` and you want the old name back | Workspace → Settings → Identity and access → Groups → rename it. A later run recognises either name |
 | Wrong naming template used | Before deletion: change the template, run plan and apply again (new account groups are created and get the permissions), then delete the unwanted account groups in the account console |
@@ -255,12 +324,16 @@ To pause it during the migration: **Workflows → identity-local-group-drift-che
 | `PERMISSION_DENIED` on account calls (groups, workspace assignment) | The service principal is not an account admin | Section 3.1, step 2 |
 | `PERMISSION_DENIED` on `permission_migration` or group patch | The service principal is not a workspace admin there | Section 3.2 |
 | `PROBLEM ... not found at the account; not added` | The member exists only in the workspace, or was removed from the account / Entra ID | Add the user or service principal at the account (or in Entra ID if provisioned from there), or accept that they are left out, then apply again |
-| `PROBLEM account group ... would merge different memberships` | The naming template has no `{env}` and the members differ | Use `{group}_{env}`, or align the memberships first |
+| `naming.template ... must contain {group}` / `{env}` (the job stops at once) | The template doesn't produce one account group per workspace | Use `{group}_{env}` or `{env}_{group}` |
+| `PROBLEM account group ... already exists and was not created by this migration` | An account group with the target name exists already (made by hand, or provisioned from Entra ID) | If it should become this group's account group, add it to `adopt_account_groups`; otherwise change the template, or rename the existing group |
+| `PROBLEM account group ... would be shared by ...` | Two local groups would get the same account group name | Rename one of the local groups, or adjust the template |
 | `PROBLEM nested group cycle` | Two local groups contain each other | Remove one membership in the workspace, then plan again |
+| `PROBLEM nested local group '...' is blocked; migrate it first` | A group it contains has its own problem | Fix the nested group's problem; both migrate in the next run |
+| `apply needs the inventory tables` | Apply was started outside Databricks | Run apply as the job; locally, only plan works |
 | `PROBLEM unknown member type` | A member that is neither a user, a service principal nor a group | Check the group in the workspace UI |
 | A group you expected is not listed | It is already an account group, it is `admins`/`users`/`account users`, or it is in `exclude_groups` | Nothing to do |
 | `0 permission(s) migrated` | The local group held no permissions on workspace objects (only membership or entitlements) | Expected for such groups |
-| The run report table is empty | `report_table` is null, or the schema doesn't exist / isn't writable by the service principal | Set it, create the schema, grant the service principal `USE CATALOG`, `USE SCHEMA`, `CREATE TABLE` |
+| `PERMISSION_DENIED` on `CREATE SCHEMA` or the inventory tables | The service principal can't create the schema in the governance catalog | Section 3.4 |
 
 ## 12. Reference
 
@@ -280,11 +353,12 @@ The drift check passes `--fail-on-local-groups true` and is not meant to be run 
 | --- | --- |
 | `account_host` | `https://accounts.azuredatabricks.net` |
 | `workspaces.<env>.workspace_id`, `.host` | The governed workspaces |
-| `naming.template` | Account group name; `{group}` and `{env}` are replaced |
+| `naming.template` | Account group name; must contain `{group}` and `{env}`, which are replaced |
 | `naming.temp_prefix` | Prefix for a local group renamed to free its name (`db-temp-`) |
 | `exclude_groups` | Local groups to skip |
 | `credentials.*` | Secret scope and key names for the service principal and account ID |
-| `report_table` | Delta table for the run report, or `null` |
+| `adopt_account_groups` | Existing account groups that may be reused as a target although the migration didn't create them |
+| `inventory.catalog`, `inventory.schema` | Where the four inventory tables are (created if missing) |
 
 ### Run outside Databricks (read only)
 

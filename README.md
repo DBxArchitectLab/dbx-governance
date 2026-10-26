@@ -38,9 +38,12 @@ definition, assigned to the workspaces that need it, usable in Unity Catalog gra
 The `identity-workspace-group-migration` job moves every workspace-local group in dev, uat and prod to an account
 group, one environment at a time:
 
-1. **Account group:** creates it (or reuses it) with the name from `naming.template`, default `{group}_{env}`.
+1. **Account group:** creates one per local group per workspace, named by `naming.template` (default
+   `{group}_{env}`). It only reuses an account group that it created itself in an earlier run (the registry table),
+   or that the config lists in `adopt_account_groups`.
 2. **Members:** the same users (by userName), service principals (by applicationId) and nested groups. Nested
-   workspace-local groups are migrated first, and their account groups are added instead.
+   workspace-local groups are migrated first, and their account groups are added instead; if a nested group is
+   blocked, every group that contains it is blocked too.
 3. **Name clash:** if the account group has the local group's own name, the local group is renamed to
    `db-temp-<name>` first.
 4. **Workspace access:** assigns the account group to the workspace (USER) and copies the local group's
@@ -50,15 +53,30 @@ group, one environment at a time:
 6. **Clean-up:** deletes the local group, only in a run with `delete_local_groups = true`.
 
 Every step is idempotent, so a failed run can be repeated. Problems (an identity missing at the account, a nested
-group cycle, two workspaces that would merge different members into one account group) are reported, and that group
-is skipped in apply mode.
+group cycle or a blocked nested group, an account group that exists but wasn't created by the migration) are
+reported, and that group is skipped in apply mode.
 
-### Why `{env}` is in the default name
+### One account group per workspace, never shared
 
-Account groups are account-wide. If dev's and prod's `data_engineers` both became one account group named
-`data_engineers`, everyone in dev's group would gain prod's permissions. The default template keeps them apart
-(`data_engineers_dev`, `data_engineers_prod`). Use `"{group}"` only for groups whose members are identical in every
-workspace; the job refuses to merge different memberships.
+Account groups are account-wide. If dev's, uat's and prod's `data_engineers` became one account group, everyone in
+dev's group would gain prod's permissions. So the naming template **must** contain `{env}`: the same local group name
+in three workspaces always becomes three account groups (`data_engineers_dev`, `data_engineers_uat`,
+`data_engineers_prod`). The job refuses to start with a template that lacks `{group}` or `{env}`, and blocks any two
+local groups that would still end up with one account group name.
+
+### Inventory tables
+
+Every run (plan and apply) appends to four Delta tables in `inventory.catalog`.`inventory.schema` (default
+`dbxarchitectlab_governance.identity`, created on the first run):
+
+| Table | One row per | Use it for |
+| --- | --- | --- |
+| `local_groups` | local group per run | The inventory: account group, member count, nested local groups, entitlements, status (`planned`, `migrated`, `local_group_deleted`, `blocked`), problems |
+| `local_group_members` | member per local group per run | Who was in each local group when it was migrated |
+| `migration_actions` | step per group per run | The audit trail: what was planned or done, in order |
+| `account_group_registry` | account group the migration created | Which account groups the migration owns and may reuse |
+
+Apply needs these tables (it reads the registry), so run it as the Databricks job.
 
 **Step-by-step setup, run order, checks, recovery and troubleshooting:
 [docs/identity-group-migration.md](docs/identity-group-migration.md).**
@@ -84,8 +102,9 @@ Deploy the bundle (`databricks bundle deploy -t governance`, or the CI workflow)
 | 4. Migrate uat, then prod | `apply` | `uat`, then `prod` | `false` |
 | 5. Remove the local groups, per environment, once checked | `apply` | `dev` (then `uat`, `prod`) | `true` |
 
-Plan mode only reads. The output lists every local group, its account group, and each action (`WOULD ...`), plus
-any problem to fix first. Set `report_table` in the config to keep a Delta history of every run.
+Plan mode changes nothing in the workspaces or the account. The output lists every local group, its account group,
+its nested local groups and each action (`WOULD ...`), plus any problem to fix first; the same goes into the
+inventory tables.
 
 ### What it doesn't cover
 
