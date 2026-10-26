@@ -1,0 +1,45 @@
+# Workspace-local group migration: the workspaces it governs, how account groups are named, where the credentials
+# are, and where the inventory tables live. Read by src/jobs/migrate_workspace_groups.py.
+
+account_host: "https://accounts.azuredatabricks.net"
+
+# The governed workspaces (from the dbx-platform-infra-azure workspace stacks: workspace_id and workspace_url).
+workspaces:
+  dev:
+    workspace_id: "<dev-workspace-id>"
+    host: "https://adb-<dev-workspace-id>.<n>.azuredatabricks.net"
+  uat:
+    workspace_id: "<uat-workspace-id>"
+    host: "https://adb-<uat-workspace-id>.<n>.azuredatabricks.net"
+  prod:
+    workspace_id: "<prod-workspace-id>"
+    host: "https://adb-<prod-workspace-id>.<n>.azuredatabricks.net"
+
+naming:
+  # Account group name for a local group. Must contain {group} and {env}: the same local group name in dev, uat and
+  # prod always becomes three different account groups (data_engineers_dev, _uat, _prod), never one shared group.
+  # The job refuses to start otherwise.
+  template: "{group}_{env}"
+  # When the account group has the local group's own name, the local group is renamed to this prefix + name first
+  # (a workspace can't hold two groups with one name). Also how a re-run recognises a group it already renamed.
+  temp_prefix: "db-temp-"
+
+# Local groups to leave alone (admins, users and account users are always skipped).
+exclude_groups: []
+
+# Account groups that already exist, were not created by this migration, and may still be reused as a target.
+# Anything not listed here and not in the registry table stops that group's migration instead of being taken over.
+adopt_account_groups: []
+
+# The governance service principal: Databricks account admin, and workspace admin in dev, uat and prod.
+credentials:
+  scope: "governance"
+  client_id_key: "sp-client-id"
+  client_secret_key: "sp-client-secret"
+  account_id_key: "databricks-account-id"
+
+# Unity Catalog schema for the inventory tables (local_groups, local_group_members, migration_actions,
+# account_group_registry), in the governance workspace's catalog. Created on the first run if missing.
+inventory:
+  catalog: "dbxarchitectlab_governance"
+  schema: "identity"
