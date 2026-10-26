@@ -1,0 +1,38 @@
+# Workspace-local group migration: the workspaces it governs, how account groups are named, and where the
+# credentials and the report live. Read by src/jobs/migrate_workspace_groups.py.
+
+account_host: "https://accounts.azuredatabricks.net"
+
+# The governed workspaces (from the dbx-platform-infra-azure workspace stacks: workspace_id and workspace_url).
+workspaces:
+  dev:
+    workspace_id: "<dev-workspace-id>"
+    host: "https://adb-<dev-workspace-id>.<n>.azuredatabricks.net"
+  uat:
+    workspace_id: "<uat-workspace-id>"
+    host: "https://adb-<uat-workspace-id>.<n>.azuredatabricks.net"
+  prod:
+    workspace_id: "<prod-workspace-id>"
+    host: "https://adb-<prod-workspace-id>.<n>.azuredatabricks.net"
+
+naming:
+  # Account group name for a local group. Account groups are account-wide, so keep {env} in the template unless the
+  # same local group has identical members in every workspace: without it, dev's members would gain prod's
+  # permissions. The job refuses to merge different memberships into one account group.
+  template: "{group}_{env}"
+  # When the account group has the local group's own name, the local group is renamed to this prefix + name first
+  # (a workspace can't hold two groups with one name). Also how a re-run recognises a group it already renamed.
+  temp_prefix: "db-temp-"
+
+# Local groups to leave alone (admins, users and account users are always skipped).
+exclude_groups: []
+
+# The governance service principal: Databricks account admin, and workspace admin in dev, uat and prod.
+credentials:
+  scope: "governance"
+  client_id_key: "sp-client-id"
+  client_secret_key: "sp-client-secret"
+  account_id_key: "databricks-account-id"
+
+# Delta table for the run report (one row per group per run); null to only print it.
+report_table: null
