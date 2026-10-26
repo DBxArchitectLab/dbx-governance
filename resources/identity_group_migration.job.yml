@@ -42,7 +42,7 @@ resources:
         timezone_id: UTC
       email_notifications:
         on_failure:
-          - "<governance-team-email>"
+          - "dbxarchitectlab@gmail.com"
       tasks:
         - task_key: detect
           environment_key: default
