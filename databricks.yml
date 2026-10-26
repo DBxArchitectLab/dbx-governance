@@ -13,4 +13,4 @@ targets:
       host: "https://adb-7405610301840934.14.azuredatabricks.net"
       root_path: /Workspace/Shared/.bundle/${bundle.name}/${bundle.target}
     run_as:
-      service_principal_name: "<governance-sp-application-id>"
+      service_principal_name: "d81cb8b1-92e7-4ab2-ac47-0143a2a1d6fc"   # sp-dbx-governance (application ID)
