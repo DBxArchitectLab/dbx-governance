@@ -32,8 +32,14 @@ jobs:
       DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      # Sign in only as the service principal with its Databricks OAuth secret. Without this, the CLI tries every
+      # method and a failure only says "cannot configure default credentials"; with it, the real cause is shown.
+      DATABRICKS_AUTH_TYPE: oauth-m2m
     steps:
       - uses: actions/checkout@v4
       - uses: databricks/setup-cli@main
+      # Shows the host and the identity the run signs in as (secrets stay masked).
+      - run: databricks auth describe
+      - run: databricks current-user me
       - run: databricks bundle validate -t governance
       - run: databricks bundle deploy -t governance
