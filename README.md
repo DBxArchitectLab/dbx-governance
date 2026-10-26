@@ -60,6 +60,9 @@ Account groups are account-wide. If dev's and prod's `data_engineers` both becam
 (`data_engineers_dev`, `data_engineers_prod`). Use `"{group}"` only for groups whose members are identical in every
 workspace; the job refuses to merge different memberships.
 
+**Step-by-step setup, run order, checks, recovery and troubleshooting:
+[docs/identity-group-migration.md](docs/identity-group-migration.md).**
+
 ### Before the first run
 
 - Identity federation is on for dev, uat and prod (it is, because Unity Catalog is assigned).
