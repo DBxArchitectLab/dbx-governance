@@ -14,6 +14,7 @@ secret scope in the config. Outside Databricks, from DATABRICKS_CLIENT_ID, DATAB
 DATABRICKS_ACCOUNT_ID; there, plan mode works without the tables and only prints.
 """
 import argparse
+import inspect
 import os
 import sys
 import uuid
@@ -23,7 +24,9 @@ from pathlib import Path
 import yaml
 from databricks.sdk import AccountClient, WorkspaceClient
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# src/ on the path, so dbx_governance imports. Not from __file__: a spark_python_task on serverless runs this file
+# through exec(), which doesn't define it; the code object still carries the file's path.
+sys.path.insert(0, str(Path(inspect.currentframe().f_code.co_filename).resolve().parents[1]))
 from dbx_governance.identity import group_migration as gm  # noqa: E402
 from dbx_governance.identity.inventory import Inventory, status  # noqa: E402
 
