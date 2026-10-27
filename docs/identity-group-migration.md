@@ -67,25 +67,25 @@ The permission migration API and the entitlement changes run inside each workspa
 
 ### 3.3 Store its credentials in the governance workspace
 
-Authenticate the CLI to the governance workspace as yourself, then create the scope and the three secrets:
+The secrets go into `sct_dbx_architect_lab`, the scope the governance workspace's bootstrap creates
+(`credentials.scope` in `config/group_migration.yaml`). Authenticate the CLI to the governance workspace as a
+workspace admin, then add the three secrets:
 
 ```bash
-databricks auth login --host https://adb-<governance-workspace-id>.<n>.azuredatabricks.net
+databricks auth login --host https://adb-7405610301840934.14.azuredatabricks.net
 
-databricks secrets create-scope governance
-databricks secrets put-secret governance sp-client-id          --string-value "<client-id>"
-databricks secrets put-secret governance sp-client-secret      --string-value "<secret>"
-databricks secrets put-secret governance databricks-account-id --string-value "<account-id>"
+databricks secrets put-secret sct_dbx_architect_lab sp-client-id          --string-value "<client-id>"
+databricks secrets put-secret sct_dbx_architect_lab sp-client-secret      --string-value "<secret>"
+databricks secrets put-secret sct_dbx_architect_lab databricks-account-id --string-value "<account-id>"
 
 # The job runs as the service principal, so it must be able to read the scope.
-databricks secrets put-acl governance <sp-application-id> READ
+databricks secrets put-acl sct_dbx_architect_lab d81cb8b1-92e7-4ab2-ac47-0143a2a1d6fc READ   # sp-dbx-governance
 ```
 
 Clear the commands from your shell history afterwards if they contained the secret.
 
-The governance workspace's bootstrap already created a scope, `sct_dbx_architect_lab`. You can put the three secrets
-there instead (skip `create-scope`, use that name in the other commands) and set `credentials.scope` in
-`config/group_migration.yaml` to it.
+To use a dedicated scope instead, create it first (`databricks secrets create-scope <name>`), use its name in the
+commands above, and set `credentials.scope` to it.
 
 ### 3.4 Let it write the inventory tables
 
@@ -324,7 +324,7 @@ To pause it during the migration: **Workflows → identity-local-group-drift-che
 
 | Message or symptom | Cause | Fix |
 | --- | --- | --- |
-| `Missing credential: secret governance/...` | Secret not created, or the job can't read the scope | Section 3.3, including `put-acl ... READ` |
+| `Missing credential: secret sct_dbx_architect_lab/...` | Secret not created, or the job can't read the scope | Section 3.3, including `put-acl ... READ` |
 | `PERMISSION_DENIED` on account calls (groups, workspace assignment) | The service principal is not an account admin | Section 3.1, step 2 |
 | `PERMISSION_DENIED` on `permission_migration` or group patch | The service principal is not a workspace admin there | Section 3.2 |
 | `PROBLEM ... not found at the account; not added` | The member exists only in the workspace, or was removed from the account / Entra ID | Add the user or service principal at the account (or in Entra ID if provisioned from there), or accept that they are left out, then apply again |

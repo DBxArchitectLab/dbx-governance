@@ -54,29 +54,37 @@ prod.
 
 ### 3. Store its credentials in a secret scope in the governance workspace
 
-The jobs read the account ID and their own OAuth credentials from a secret scope. The governance workspace's
-bootstrap already created the scope `sct_dbx_architect_lab`; either use it (and set `credentials.scope` in
-`config/group_migration.yaml` to `sct_dbx_architect_lab`), or create a dedicated `governance` scope (the config's
-default) with `databricks secrets create-scope governance` first. With the bootstrap's scope:
+The jobs read the account ID and their own OAuth credentials from the secret scope `sct_dbx_architect_lab`
+(`credentials.scope` in `config/group_migration.yaml`). The governance workspace's bootstrap creates the scope, empty,
+and only the infrastructure deployment principal can use it, so add the secrets and give `sp-dbx-governance` READ.
+As a workspace admin of the governance workspace:
 
 ```bash
-databricks auth login --host https://adb-<governance-workspace-id>.<n>.azuredatabricks.net
+databricks auth login --host https://adb-7405610301840934.14.azuredatabricks.net
 
 databricks secrets put-secret sct_dbx_architect_lab sp-client-id          --string-value "<client-id>"
 databricks secrets put-secret sct_dbx_architect_lab sp-client-secret      --string-value "<secret>"
 databricks secrets put-secret sct_dbx_architect_lab databricks-account-id --string-value "<account-id>"
 
 # The jobs run as the service principal, so it must be able to read the scope.
-databricks secrets put-acl sct_dbx_architect_lab <sp-application-id> READ
+databricks secrets put-acl sct_dbx_architect_lab d81cb8b1-92e7-4ab2-ac47-0143a2a1d6fc READ   # sp-dbx-governance
+
+# Check: the three keys are listed, and sp-dbx-governance has READ.
+databricks secrets list-secrets sct_dbx_architect_lab
+databricks secrets list-acls sct_dbx_architect_lab
 ```
+
+`<client-id>` and `<secret>` are `sp-dbx-governance`'s application ID and a Databricks OAuth secret (step 1);
+`<account-id>` is in the account console, top right menu. If the job fails with `Missing credential: secret
+sct_dbx_architect_lab/...`, one of the keys is missing or misspelled, or the READ grant is.
 
 ### 4. Let it write the inventory tables
 
-In the governance workspace's SQL editor:
-
-```sql
-GRANT USE CATALOG, CREATE SCHEMA ON CATALOG dbxarchitectlab_governance TO `<sp-application-id>`;
-```
+The catalog grants are managed by the infrastructure repository and are authoritative (a grant made by hand is
+removed on the next apply). In `dbx-platform-infra-azure`, add the application ID to `grant_principals` in
+`live/governance/workspace-bootstrap/catalog-config.yaml`, then plan and apply
+`governance-dbxarchitectlab-workspace-bootstrap`. The default privileges, `BROWSE`, `USE_CATALOG` and
+`CREATE_SCHEMA`, are what the job needs.
 
 The group migration creates the `identity` schema on its first run and owns it from then on.
 

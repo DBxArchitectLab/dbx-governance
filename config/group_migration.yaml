@@ -32,8 +32,10 @@ exclude_groups: []
 adopt_account_groups: []
 
 # The governance service principal: Databricks account admin, and workspace admin in dev, uat and prod.
+# The scope is the one the governance workspace's bootstrap creates (dbx-platform-infra-azure,
+# live/governance/workspace-bootstrap/secret-scope-config.yaml); sp-dbx-governance needs READ on it.
 credentials:
-  scope: "governance"
+  scope: "sct_dbx_architect_lab"
   client_id_key: "sp-client-id"
   client_secret_key: "sp-client-secret"
   account_id_key: "databricks-account-id"
