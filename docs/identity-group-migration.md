@@ -133,7 +133,7 @@ Other settings:
 
 `resources/identity_group_migration.job.yml`: replace `<governance-team-email>` in the drift check.
 
-Commit the changes on a branch and open a pull request: the CI workflow runs the unit tests.
+Commit the changes on a branch and open a pull request: the Tests workflow runs the unit tests.
 
 ## 4. Deploy the jobs
 
