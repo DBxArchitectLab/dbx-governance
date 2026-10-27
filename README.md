@@ -240,7 +240,7 @@ inventory tables.
 
 ### Keeping it that way
 
-The `identity-local-group-drift-check` job runs daily in plan mode across dev, uat and prod and fails (with an
+The `identity-local-group-drift-check` job (schedule paused: `pause_status` in its job file) runs daily in plan mode across dev, uat and prod and fails (with an
 email) when any workspace-local group exists. Longer term, make Microsoft Entra ID the source of account groups
 (SCIM provisioning or automatic identity management), so groups are managed once, in Entra ID, and only assigned to
 workspaces.
