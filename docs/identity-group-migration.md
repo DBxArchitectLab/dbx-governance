@@ -144,14 +144,22 @@ Beta): the **egress** of the governance workspace and the **ingress** of each go
 call to dev, uat or prod fails with `PermissionDenied: Cert validation failed. Workspace comparison, snp system
 trusted, and snp trusted workload checks did not pass`.
 
-As an account admin, account console → **Security → Networking → Context-based ingress & egress control**:
+As an account admin:
+
+0. Account console → **Previews** → turn on **Cross Workspace Network Policy** (Beta). Without it, the **Ingress**
+   tab shows only **Public Network Access** and has no cross-workspace rules.
+
+Then account console → **Security → Networking → Context-based ingress & egress control**:
 
 1. **Egress** (the policy of the governance workspace, `7405610301840934`): **Allow access to all destinations**
    already allows it. If it is **Restricted access to specific destinations**, add dev, uat and prod
    (`7405609089943919`, `7405605496889455`, `7405604784566671`) under **Allowed Databricks workspace destinations**.
-2. **Ingress** (the policy of dev, uat and prod): on the **Ingress** tab, clear **Compatibility mode**, choose
-   **Restrict access to specific source workspaces**, add an allow rule for the governance workspace
-   (`7405610301840934`), and **Save**.
+2. **Ingress** (the policy of dev, uat and prod): on the **Ingress** tab, keep **Public Network Access → Allow access
+   from all public IPs**; in the cross-workspace section, clear **Compatibility mode** if shown, choose **Restrict
+   access to specific source workspaces**, and add an allow rule: access type **API**, identity `sp-dbx-governance`
+   (or all service principals), network source **Selected workspaces** = the governance workspace
+   (`7405610301840934`). **Save**, then wait 10-15 minutes before running the job. Denials are logged in
+   `system.access.inbound_network` in the governed workspace.
 
 All workspaces start on `default-policy`, so editing it changes every workspace. To change only dev, uat and prod,
 create a policy (for example `governed-workspaces`) with the same egress settings and the ingress rule above, and
