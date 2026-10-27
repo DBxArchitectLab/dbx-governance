@@ -3,7 +3,7 @@ name: CI and deploy
 run-name: "${{ format('{0} {1} → governance (@{2})', inputs.deploy && 'Deploy' || 'Validate', github.ref_name, github.actor) }}"
 
 # Run workflow: the selected branch ("Use workflow from") validated and, with "Deploy" ticked (the default), deployed to
-# the governance workspace. The unit tests are tests.yml, on every pull request.
+# the governance workspace.
 on:
   workflow_dispatch:
     inputs:
