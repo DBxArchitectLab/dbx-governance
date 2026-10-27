@@ -26,7 +26,8 @@ config/                                What each job governs (workspaces, naming
 src/dbx_governance/                    Library code, one package per governance area
 src/jobs/                              Job entry points
 tests/                                 Unit tests (no Databricks connection needed)
-.github/workflows/ci.yml               Tests on every pull request; Run workflow: validate and deploy any branch
+.github/workflows/ci.yml               Run workflow: validate and deploy any branch to the governance workspace
+.github/workflows/tests.yml            Unit tests on every pull request
 ```
 
 ## Set up the governance workspace and CI/CD
@@ -88,10 +89,32 @@ removed on the next apply). In `dbx-platform-infra-azure`, add the application I
 
 The group migration creates the `identity` schema on its first run and owns it from then on.
 
-### 5. Check serverless compute for jobs
+### 5. Check serverless compute for jobs, and allow it to reach dev, uat and prod
 
 The jobs run on serverless compute. It must be enabled for the account (account console → **Settings → Feature
 enablement**); without it, the jobs need a job cluster instead.
+
+The jobs run on serverless compute in the governance workspace and call the APIs of dev, uat and prod. Databricks
+lets serverless compute reach **another** workspace only when the account's network policies allow it on both sides
+([cross-workspace access](https://learn.microsoft.com/en-us/azure/databricks/security/network/front-end/cross-workspace-access),
+Beta): the **egress** of the governance workspace and the **ingress** of each governed workspace. Without it, every
+call to dev, uat or prod fails with `PermissionDenied: Cert validation failed. Workspace comparison, snp system
+trusted, and snp trusted workload checks did not pass`.
+
+As an account admin, account console → **Security → Networking → Context-based ingress & egress control**:
+
+1. **Egress** (the policy of the governance workspace, `7405610301840934`): **Allow access to all destinations**
+   already allows it. If it is **Restricted access to specific destinations**, add dev, uat and prod
+   (`7405609089943919`, `7405605496889455`, `7405604784566671`) under **Allowed Databricks workspace destinations**.
+2. **Ingress** (the policy of dev, uat and prod): on the **Ingress** tab, clear **Compatibility mode**, choose
+   **Restrict access to specific source workspaces**, add an allow rule for the governance workspace
+   (`7405610301840934`), and **Save**.
+
+All workspaces start on `default-policy`, so editing it changes every workspace. To change only dev, uat and prod,
+create a policy (for example `governed-workspaces`) with the same egress settings and the ingress rule above, and
+assign it to those three workspaces (account console → **Workspaces** → the workspace → **Network policy**). Same-
+workspace traffic is always allowed, so nothing else changes. The job checks this first and stops with these steps
+if a workspace refuses it.
 
 ### 6. Fill in the repository configuration
 
@@ -120,7 +143,7 @@ Add required reviewers to the environment if deployments should need an approval
 2. **Actions → CI and deploy → Run workflow**: pick the branch in **Use workflow from**; **Deploy the bundle** is
    ticked by default. The job **Deploy to governance workspace** runs `databricks bundle validate -t governance` and
    `databricks bundle deploy -t governance` (untick the box to validate only). The run is titled
-   `Deploy <branch> → governance (@<you>)`. The unit tests aren't part of it: they run on the pull request.
+   `Deploy <branch> → governance (@<you>)`. The unit tests aren't part of it: the **Tests** workflow runs them on every pull request.
 3. In the governance workspace, **Workflows** now shows the bundle's jobs.
 
 To deploy from your machine instead: `databricks auth login --host <governance-workspace-url>`, then

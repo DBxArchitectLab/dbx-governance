@@ -23,6 +23,7 @@ from pathlib import Path
 
 import yaml
 from databricks.sdk import AccountClient, WorkspaceClient
+from databricks.sdk.errors import PermissionDenied
 
 # src/ on the path, so dbx_governance imports. Not from __file__: a spark_python_task on serverless runs this file
 # through exec(), which doesn't define it; the code object still carries the file's path.
@@ -48,6 +49,26 @@ def spark_session():
         return SparkSession.builder.getOrCreate()
     except Exception:
         return None
+
+
+def check_reachable(w: WorkspaceClient, ws: gm.Workspace) -> None:
+    """Stop with the fix when the network policy blocks this job from the governed workspace.
+
+    On serverless, a call to another workspace passes only when the account's network policies allow it on both sides:
+    the egress of the workspace the job runs in, and the ingress of the governed workspace (cross-workspace access).
+    The API reports a block as PermissionDenied "Cert validation failed".
+    """
+    try:
+        w.current_user.me()
+    except PermissionDenied as e:
+        if "Cert validation failed" not in str(e):
+            raise
+        sys.exit(
+            f"{ws.env} ({ws.host}) refused the call: the account's network policy doesn't allow cross-workspace access "
+            f"from the governance workspace. Account console -> Security -> Networking -> the network policy of "
+            f"workspace {ws.workspace_id} -> Ingress: clear Compatibility mode, choose 'Restrict access to specific "
+            f"source workspaces' and allow the governance workspace's ID; its Egress must allow {ws.workspace_id} "
+            f"too. See docs/identity-group-migration.md, section 3.6.\n{e}")
 
 
 def main() -> int:
@@ -92,6 +113,8 @@ def main() -> int:
                   for e in envs]
     clients = {ws.env: WorkspaceClient(host=ws.host, client_id=client_id, client_secret=client_secret)
                for ws in workspaces}
+    for ws in workspaces:
+        check_reachable(clients[ws.env], ws)
 
     plans = []
     for ws in workspaces:

@@ -1,11 +1,10 @@
 name: CI and deploy
 # The run's title in the Actions list: what ran, from which branch, and who started it.
-run-name: "${{ github.event_name == 'workflow_dispatch' && format('{0} {1} → governance (@{2})', inputs.deploy && 'Deploy' || 'Validate', github.ref_name, github.actor) || format('Test {0} (PR #{1})', github.head_ref, github.event.pull_request.number) }}"
+run-name: "${{ format('{0} {1} → governance (@{2})', inputs.deploy && 'Deploy' || 'Validate', github.ref_name, github.actor) }}"
 
-# Pull requests: unit tests. Run workflow: the selected branch ("Use workflow from") validated and, with "Deploy" ticked
-# (the default), deployed to the governance workspace.
+# Run workflow: the selected branch ("Use workflow from") validated and, with "Deploy" ticked (the default), deployed to
+# the governance workspace. The unit tests are tests.yml, on every pull request.
 on:
-  pull_request:
   workflow_dispatch:
     inputs:
       deploy:
@@ -17,20 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - run: pip install databricks-sdk pyyaml pytest
-      - run: pytest -q tests
-
   deploy:
     name: Deploy to governance workspace
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: governance
     env:
