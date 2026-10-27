@@ -1,19 +1,24 @@
 name: CI and deploy
+# The run's title in the Actions list: what ran, from which branch, and who started it.
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('{0} {1} → governance (@{2})', inputs.deploy && 'Deploy' || 'Validate', github.ref_name, github.actor) || format('Test {0} (PR #{1})', github.head_ref, github.event.pull_request.number) }}"
 
+# Pull requests: unit tests. Run workflow: the selected branch ("Use workflow from") validated and, with "Deploy" ticked
+# (the default), deployed to the governance workspace.
 on:
   pull_request:
   workflow_dispatch:
     inputs:
       deploy:
-        description: Deploy the bundle to the governance workspace
+        description: Deploy the bundle to the governance workspace (untick to validate only)
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   test:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +29,8 @@ jobs:
       - run: pytest -q tests
 
   deploy:
-    needs: test
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    name: Deploy to governance workspace
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: governance
     env:
@@ -42,4 +47,5 @@ jobs:
       - run: databricks auth describe
       - run: databricks current-user me
       - run: databricks bundle validate -t governance
-      - run: databricks bundle deploy -t governance
+      - if: inputs.deploy
+        run: databricks bundle deploy -t governance

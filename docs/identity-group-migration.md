@@ -150,7 +150,7 @@ databricks bundle deploy -t governance
 1. Repository **Settings → Environments → New environment** `governance`, with three secrets: `DATABRICKS_HOST` (the
    governance workspace URL), `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET` (a principal allowed to deploy
    to the governance workspace).
-2. **Actions → CI and deploy → Run workflow**, tick **Deploy the bundle**.
+2. **Actions → CI and deploy → Run workflow**, branch `main` (**Deploy the bundle** is ticked by default).
 
 Either way, the governance workspace now shows two jobs under **Workflows**: `identity-workspace-group-migration`
 and `identity-local-group-drift-check`.
