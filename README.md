@@ -1,9 +1,18 @@
 # dbx-governance
 
-Part of **DBX Architect Lab**, an enterprise Databricks platform built in public:
-[YouTube](https://www.youtube.com/@DBxArchitectLab) ·
-[LinkedIn](https://www.linkedin.com/in/DBxArchitectLab) ·
-[GitHub](https://github.com/DBxArchitectLab)
+> **📺 DBX Architect Lab on YouTube:
+> [youtube.com/@DBxArchitectLab](https://www.youtube.com/@DBxArchitectLab)**
+>
+> One enterprise Databricks platform on Azure, AWS and Google Cloud, built in public: infrastructure, platform
+> management, governance, data engineering and AI/BI. This repository is part of it, and the videos walk through the
+> architecture and the deployment step by step.
+>
+> *With AI assistance, coding is no longer the hard part. A solid understanding of the architecture and the
+> fundamentals is the key to success.*
+>
+> [YouTube](https://www.youtube.com/@DBxArchitectLab) ·
+> [LinkedIn](https://www.linkedin.com/in/DBxArchitectLab) ·
+> [GitHub](https://github.com/DBxArchitectLab)
 
 Platform-level governance and audit for the Azure Databricks platform. It runs from a dedicated governance workspace
 and governs what happens in the dev, uat and prod workspaces: identities, access and audit.
