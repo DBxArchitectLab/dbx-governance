@@ -135,6 +135,30 @@ Other settings:
 
 Commit the changes on a branch and open a pull request: the Tests workflow runs the unit tests.
 
+### 3.6 Allow cross-workspace access from the governance workspace
+
+The jobs run on serverless compute in the governance workspace and call the APIs of dev, uat and prod. Databricks
+lets serverless compute reach **another** workspace only when the account's network policies allow it on both sides
+([cross-workspace access](https://learn.microsoft.com/en-us/azure/databricks/security/network/front-end/cross-workspace-access),
+Beta): the **egress** of the governance workspace and the **ingress** of each governed workspace. Without it, every
+call to dev, uat or prod fails with `PermissionDenied: Cert validation failed. Workspace comparison, snp system
+trusted, and snp trusted workload checks did not pass`.
+
+As an account admin, account console → **Security → Networking → Context-based ingress & egress control**:
+
+1. **Egress** (the policy of the governance workspace, `7405610301840934`): **Allow access to all destinations**
+   already allows it. If it is **Restricted access to specific destinations**, add dev, uat and prod
+   (`7405609089943919`, `7405605496889455`, `7405604784566671`) under **Allowed Databricks workspace destinations**.
+2. **Ingress** (the policy of dev, uat and prod): on the **Ingress** tab, clear **Compatibility mode**, choose
+   **Restrict access to specific source workspaces**, add an allow rule for the governance workspace
+   (`7405610301840934`), and **Save**.
+
+All workspaces start on `default-policy`, so editing it changes every workspace. To change only dev, uat and prod,
+create a policy (for example `governed-workspaces`) with the same egress settings and the ingress rule above, and
+assign it to those three workspaces (account console → **Workspaces** → the workspace → **Network policy**). Same-
+workspace traffic is always allowed, so nothing else changes. The job checks this first and stops with these steps
+if a workspace refuses it.
+
 ## 4. Deploy the jobs
 
 ### From your machine
@@ -324,6 +348,7 @@ To pause it during the migration: **Workflows → identity-local-group-drift-che
 
 | Message or symptom | Cause | Fix |
 | --- | --- | --- |
+| `PermissionDenied: Cert validation failed. Workspace comparison, snp system trusted, and snp trusted workload checks did not pass`, or the job's `refused the call: the account's network policy doesn't allow cross-workspace access` | The governed workspace's network policy doesn't allow ingress from the governance workspace's serverless compute | Section 3.6 |
 | `Missing credential: secret sct_dbx_architect_lab/...` | Secret not created, or the job can't read the scope | Section 3.3, including `put-acl ... READ` |
 | `PERMISSION_DENIED` on account calls (groups, workspace assignment) | The service principal is not an account admin | Section 3.1, step 2 |
 | `PERMISSION_DENIED` on `permission_migration` or group patch | The service principal is not a workspace admin there | Section 3.2 |
