@@ -26,7 +26,7 @@ config/                                What each job governs (workspaces, naming
 src/dbx_governance/                    Library code, one package per governance area
 src/jobs/                              Job entry points
 tests/                                 Unit tests (no Databricks connection needed)
-.github/workflows/ci.yml               Tests on every pull request; bundle validate and deploy on demand
+.github/workflows/ci.yml               Tests on every pull request; Run workflow: validate and deploy any branch
 ```
 
 ## Set up the governance workspace and CI/CD
@@ -109,8 +109,10 @@ Add required reviewers to the environment if deployments should need an approval
 
 1. **Merge to `main`.** A workflow that you start manually only appears under **Actions** once it is on the default
    branch. Pull requests run the unit tests automatically.
-2. **Actions → CI and deploy → Run workflow**, tick **Deploy the bundle**. It runs the tests, then
-   `databricks bundle validate -t governance` and `databricks bundle deploy -t governance`.
+2. **Actions → CI and deploy → Run workflow**: pick the branch in **Use workflow from**; **Deploy the bundle** is
+   ticked by default. The job **Deploy to governance workspace** runs `databricks bundle validate -t governance` and
+   `databricks bundle deploy -t governance` (untick the box to validate only). The run is titled
+   `Deploy <branch> → governance (@<you>)`. The unit tests aren't part of it: they run on the pull request.
 3. In the governance workspace, **Workflows** now shows the bundle's jobs.
 
 To deploy from your machine instead: `databricks auth login --host <governance-workspace-url>`, then
