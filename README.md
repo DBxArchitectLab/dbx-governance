@@ -26,8 +26,9 @@ and governs what happens in the dev and prod workspaces: identities, access and 
 Governance changes are not promoted from dev to prod like data pipelines: they act on every workspace from one
 place, as an account admin, so they live here.
 
-What runs here today: [Terraform drift detection and audit](#terraform-drift-detection-and-audit) for the dev and
-prod workspaces. The workspace-local to account group migration that started here moved to `dbx-lakehouse-ai-bi`,
+What runs here today, for the dev and prod workspaces: [workspace governance](#workspace-governance) (is every
+workspace compliant with the standard?) and [Terraform drift detection and audit](#terraform-drift-detection-and-audit)
+(does every workspace still match its code?). The workspace-local to account group migration that started here moved to `dbx-lakehouse-ai-bi`,
 where each environment migrates its own workspace (serverless compute in the governance workspace can't call the dev
 and prod APIs without cross-workspace network policies).
 
@@ -35,6 +36,11 @@ and prod APIs without cross-workspace network policies).
 
 ```
 databricks.yml                         Databricks Asset Bundle, target "governance" (the governance workspace)
+config/governance.yml                  Workspace governance: the estate, the standard, the exceptions
+resources/governance.yml               The estate schema and snapshots volume, and the workspace-governance job
+src/govern/                            collect (observe), rules (judge), report (act): plain Python, unit tested
+src/jobs/governance_validate.py        The job: snapshots -> inventory, results and compliance tables, one report each
+.github/workflows/governance.yml       On demand: collect every workspace, validate centrally, one issue per workspace
 config/drift.yml                       Drift detection: which workspaces and stacks, who the pipelines are, what to watch
 resources/drift.yml                    The drift schema and volume, and the terraform-drift-audit job
 src/drift/                             config, plan findings, audit query and remediation (plain Python, unit tested)
@@ -43,6 +49,131 @@ tests/                                 pytest
 .github/workflows/drift.yml            On demand (daily schedule off): plan on every stack, drift issues, then the audit job
 .github/workflows/ci.yml               Pull requests: unit tests. Run workflow: validate and deploy any branch
 ```
+
+## Workspace governance
+
+Drift detection asks whether each workspace still matches its code. Governance asks a different question: does each
+workspace meet the standard, whoever made it that way? A grant written in Terraform to a person is not drift (code and
+reality agree), and it still breaks "groups, not people". At two workspaces you can look; at a hundred you need the
+platform to tell you.
+
+The pattern: **provision centrally, deploy consistently, validate centrally, remediate locally.** Governance code is not
+deployed into every workspace. Metadata is brought to one governance workspace, checked there against one standard,
+and every failure goes to the owner of the workspace, with the evidence and the fix.
+
+```
+Run workflow  .github/workflows/governance.yml   (on demand; a daily schedule is two commented lines)
+  estate     read config/governance.yml -> one collector per workspace
+  collect    (x2) per workspace, through its API, read-only, as the drift environment's service principal:
+               catalogs and their bindings, the environment catalog's schemas, owners and grants,
+               external locations, clusters, cluster policies, SQL warehouses, jobs, workspace settings
+             -> snapshot <env>.json: observations in one shape, and anything that could not be read
+  validate   upload the snapshots + governance.yml to /Volumes/dbxarchitectlab_governance/estate/snapshots/<run id>/
+             databricks bundle run workspace_governance   (governance workspace, as sp-dbx-governance)
+               every rule in src/govern/rules.py against every snapshot, with the run's own standard
+               -> dbxarchitectlab_governance.estate.inventory    what exists, per run (history)
+               -> dbxarchitectlab_governance.estate.results      one row per rule evaluation: PASS, FAIL, EXCEPTION or ERROR
+               -> dbxarchitectlab_governance.estate.compliance   one scorecard per workspace and run
+               -> report/<env>.md, report/summary.json           next to the snapshots
+  remediate  (x2) open or update the issue "Governance: <env>" (labels governance, owner:<group>, severity:<worst>),
+             or close it when the workspace is compliant again
+```
+
+Why the collectors run per workspace, in GitHub Actions: the dev and prod catalogs are bound to their own
+workspace. A workspace binding controls where a Unity Catalog securable can be used, and the governance workspace is
+not one of those places, so its information schema doesn't show those catalogs; its serverless compute also can't call
+the dev and prod APIs without network policies. Collecting through each workspace sees the workspace-scoped objects
+and grants this framework checks. That is a practical choice, not the only way: account-level metadata (system
+tables, account APIs) can be read centrally, and at scale more of the collection moves there. Observation happens
+where the access is; judgement happens in one place.
+
+The collectors only perform read operations, but they sign in as the deployment identity (`sp-dbx-platform-infra`),
+which can write. In production, give them a dedicated, least-privileged collector identity (see Known limits).
+
+### Three layers, kept apart
+
+| Layer | Code | Knows | Doesn't know |
+| --- | --- | --- | --- |
+| Observe | `src/govern/collect.py` | The workspace APIs, one normalized shape | The standard |
+| Judge | `src/govern/rules.py` + `standard` in the config | What is expected | Any API |
+| Act | `src/govern/report.py` + the workflow's issues | Who owns the fix | How it was found |
+
+A new rule never touches a collector; a new source never touches a rule.
+
+### The rules
+
+| Rule | Checks | prod | nonprod |
+| --- | --- | --- | --- |
+| IAM-01 | No direct grants to users: grant to groups (fix: the GRANT and REVOKE) | high | medium |
+| IAM-02 | Grants only to approved groups and service principals | high | medium |
+| IAM-03 | High-risk privileges (ALL PRIVILEGES, MANAGE) only for admin groups and pipelines | critical | high |
+| OWN-01 | Catalog, schemas and external locations owned by a group or a pipeline (fix: ALTER ... OWNER TO) | high | medium |
+| NAM-01 | Schema names follow the naming standard | low | low |
+| ISO-01 | The environment's catalog is isolated, and no other environment's catalog is reachable | critical | high |
+| STO-01 | Catalog and schema storage under the environment's storage roots | high | medium |
+| STO-02 | External locations usable in the workspace point at its own storage | high | high |
+| CMP-01 | All-purpose clusters use a cluster policy | high | medium |
+| CMP-02 | All-purpose clusters carry the required tags | medium | low |
+| CMP-03 | Clusters and SQL warehouses stop when idle | medium | medium |
+| JOB-01 | Jobs run as an approved service principal | high | - |
+| WSC-01 | Workspace settings match the standard | medium | low |
+| COL-00 | Every domain was collected: a check that could not run is an error, never a pass | high | high |
+
+The rules cover the domains the collectors read (above); tables, views, volumes and functions are not collected
+yet. Every result carries its severity, the evidence (object names and principals, never data), and the fix. The SQL is for
+the owner to review and run; nothing is changed automatically.
+
+**Exceptions are explicit and time-bound.** A failure that matches an entry under `exceptions` (rules, environment,
+object and principal patterns) is reported as EXCEPTION with its reason and approver until its `expires` date; the day
+after, it fails again. Changing an exception is a pull request, like changing the standard.
+
+**The standard travels with the evidence.** The workflow uploads `config/governance.yml` next to the snapshots, and the
+job checks against that copy, so every run records which standard it used, and a branch can be tried before merging.
+
+### Scale out: config/governance.yml
+
+Everything that names a workspace is under `estate`. To add uat, one entry:
+
+```yaml
+estate:
+  uat:
+    workspace_id: <workspace ID>
+    host: https://adb-<workspace ID>.<n>.azuredatabricks.net
+    catalog: dbxarchitectlab_uat
+    tier: nonprod                  # which rules apply, at which severity
+    owner: <owning group>          # who gets the issue
+    storage_roots: [abfss://dbx-architect-lab-uat@stdbxarchlabuat.dfs.core.windows.net/]
+```
+
+The next run collects it, checks it against the same standard and opens its issue. What runs today is the
+two-workspace implementation: per-workspace API collectors, the deployment identity, and one issue per workspace
+labelled with its owner. From two workspaces to a hundred, these are the targets (not built yet); what changes is how
+the list is made and how the work is spread, not the rules:
+- **The estate from the account, not by hand.** Generate the entries from the account's workspace list and the
+  workspaces' tags (environment, owner, tier), in the same pipeline that vends the workspaces.
+- **Account-wide sources where they fit.** Where system tables cover a domain (compute, jobs, billing, audit),
+  centralized queries in the governance workspace replace many API calls, where they are supported and the identity
+  is authorized. System tables have their own coverage, latency and permission requirements: they complement the API
+  collectors, which stay for what only a workspace can answer (grants inside bound catalogs, workspace settings).
+- **Fan out in batches.** A GitHub Actions matrix runs up to 256 jobs; at more workspaces, give each collector a batch.
+- **A collector identity of its own,** with read-only access in every workspace, instead of the deploy identity.
+- **Owners from tags,** and findings routed to the owning team where it works (today: one issue per workspace,
+  labelled with its owner; in an enterprise: Jira, ServiceNow or Teams).
+
+### Set up (once)
+
+The collectors use the `drift` GitHub environment (the drift workflow's service principal, `sp-dbx-platform-infra`,
+which can already read every workspace), and the validate step uses the `governance` environment. Nothing new to add
+in GitHub. Then:
+1. **Deploy the bundle** (Actions › CI and deploy › Run workflow): it creates the `estate` schema, the `snapshots`
+   volume and the `workspace-governance` job.
+2. **Run it:** Actions › Workspace governance › Run workflow.
+
+Known limits, to fix as the platform grows:
+- **The collector reads as the deploy identity.** It only sends GET requests, but the credential could write. Target:
+  a read-only collector identity in every workspace.
+- **The environment's catalog is walked to the schema level.** Tables, views, volumes and functions are the next
+  domain (owners, placement, direct grants).
 
 ## Terraform drift detection and audit
 
