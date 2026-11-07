@@ -40,7 +40,7 @@ resources/drift.yml                    The drift schema and volume, and the terr
 src/drift/                             config, plan findings, audit query and remediation (plain Python, unit tested)
 src/jobs/drift_audit.py                The job: plan findings + system.access.audit -> findings and health tables
 tests/                                 pytest
-.github/workflows/drift.yml            Daily: terraform plan on every stack, drift issues, then the audit job
+.github/workflows/drift.yml            On demand (daily schedule off): plan on every stack, drift issues, then the audit job
 .github/workflows/ci.yml               Pull requests: unit tests. Run workflow: validate and deploy any branch
 ```
 
@@ -48,7 +48,7 @@ tests/                                 pytest
 
 Terraform code in `dbx-platform-infra-azure` is the intent; the workspaces are the reality. Drift is the gap between
 them: a setting clicked in the UI, a grant given by hand, an object created that no code knows about. Governance
-defines the target state; validation proves it still holds, every day, and says what to do when it doesn't.
+defines the target state; validation proves it still holds, on every run, and says what to do when it doesn't.
 
 Two sides, because each sees what the other can't:
 
@@ -58,7 +58,7 @@ Two sides, because each sees what the other can't:
 | Audit | `system.access.audit`, in the governance workspace | Who changed what, when; objects created outside Terraform | Whether it matters to the code |
 
 ```
-06:00 UTC   .github/workflows/drift.yml
+Run workflow  .github/workflows/drift.yml   (the daily 06:00 UTC schedule is off: two commented lines)
   stacks    read config/drift.yml -> one job per environment and stack
   plan      (x4) terragrunt plan -detailed-exitcode on live/<env>/<stack>, infra repo main, read with the deploy identity
               0 clean        -> close the stack's open drift issue
@@ -73,7 +73,7 @@ Two sides, because each sees what the other can't:
 ```
 
 Every finding ends in one of two places: **revert** (apply the code again: the manual change is undone) or **adopt**
-(the change was right: put it in code, review, merge, apply). Either way, the next morning's plan proves it with exit
+(the change was right: put it in code, review, merge, apply). Either way, the next run's plan proves it with exit
 code 0, and the issue closes. For a grant given by hand, the finding includes the `REVOKE` (or `GRANT`) statements that
 undo it, to review, never run automatically. For an object created outside Terraform, adopting means adding it to the
 config with an `import` block.
@@ -118,7 +118,8 @@ A typo fails the first step with the field that is wrong (`src/drift/config.py`)
    ```
 4. **Deploy the bundle** (Actions › CI and deploy › Run workflow): it creates the `drift` schema, the `plan_findings`
    volume and the `terraform-drift-audit` job.
-5. **Run it:** Actions › Terraform drift › Run workflow. After that it runs every day at 06:00 UTC.
+5. **Run it:** Actions › Terraform drift › Run workflow. The daily schedule (06:00 UTC) is off; to turn it on,
+   uncomment the `schedule` lines at the top of `.github/workflows/drift.yml`.
 
 Known limits, to fix as the platform grows:
 - **The plan identity is the deploy identity.** Planning needs to read every object the stacks manage, including
