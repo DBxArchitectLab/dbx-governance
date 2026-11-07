@@ -29,8 +29,9 @@ def markdown(score, results):
                       *("\n".join(sql).splitlines()), "```"]
     excepted = [r for r in results if r["status"] == "EXCEPTION"]
     if excepted:
-        lines += ["", f"Exceptions ({len(excepted)}): " + "; ".join(
-            sorted({f"{r['rule_id']} {r['principal'] or r['object']}: {r['exception']}" for r in excepted}))]
+        lines += ["", f"Exceptions ({len(excepted)}):"] + [
+            f"- {item}" for item in sorted({f"{r['rule_id']} {r['principal'] or r['object']}: {r['exception']}"
+                                           for r in excepted})]
     if not open_:
         lines += ["", "Every check passed or is covered by an exception."]
     return "\n".join(lines) + "\n"

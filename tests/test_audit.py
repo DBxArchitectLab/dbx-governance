@@ -1,5 +1,4 @@
 """The audit side: the query, the classification, the revert SQL, and both sides joined in the job."""
-import importlib.util
 import json
 from datetime import datetime
 
@@ -7,6 +6,7 @@ import pytest
 from conftest import ROOT
 
 from drift import audit, config, plan
+from drift import findings as findings_mod
 
 CFG = config.load(ROOT / "config" / "drift.yml")
 PROD = 7405604784566671
@@ -61,15 +61,8 @@ def test_classification(action, service, category):
     assert audit.classify(event(action, service, name="x"))[0] == category
 
 
-def load_job():
-    spec = importlib.util.spec_from_file_location("drift_audit", ROOT / "src" / "jobs" / "drift_audit.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_the_job_joins_both_sides():
-    job = load_job()
+    job = findings_mod
     stack = config.Stack("prod", "workspace-bootstrap", "live/prod/workspace-bootstrap", PROD, "high")
     drifted = {"resource_drift": [{"address": "p", "type": "databricks_cluster_policy",
                                    "change": {"actions": ["update"], "before": {"d": 1}, "after": {"d": 8}}}],
@@ -99,3 +92,13 @@ def test_the_job_joins_both_sides():
     _, health = job.build(CFG, "100", datetime(2026, 11, 21), clean, events)
     prod = next(x for x in health if x["environment"] == "prod")
     assert prod["in_sync"] and prod["manual_changes"] == 2
+
+
+def test_the_job_runs_the_notebook_and_the_notebook_uses_the_library():
+    import yaml
+    job = yaml.safe_load((ROOT / "resources" / "drift.yml").read_text(encoding="utf-8"))["resources"]["jobs"]
+    task = job["drift_audit"]["tasks"][0]["notebook_task"]
+    text = (ROOT / "resources" / task["notebook_path"]).resolve().read_text(encoding="utf-8")
+    assert text.startswith("# Databricks notebook source"), "deployed as a notebook, not a file"
+    assert "findmod.build(" in text and 'dbutils.widgets.text("run_id"' in text
+    assert [p["name"] for p in job["drift_audit"]["parameters"]] == ["run_id"]

@@ -1,13 +1,12 @@
 """Workspace governance: config, collector, rules and the job's build step, without a workspace."""
 import copy
-import importlib.util
 from datetime import date, datetime, timezone
 
 import pytest
 import yaml
 from conftest import ROOT
 
-from govern import collect, config, report, rules
+from govern import collect, config, report, rules, validate
 
 CFG = config.load(ROOT / "config" / "governance.yml")
 TODAY = date(2026, 11, 7)
@@ -230,17 +229,8 @@ def test_every_rule_has_a_unique_id_and_valid_severities():
 
 
 # ---------------------------------------------------------------- the job's build step and the report
-def load_job():
-    spec = importlib.util.spec_from_file_location("governance_validate",
-                                                  ROOT / "src" / "jobs" / "governance_validate.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def test_build_scores_every_workspace_and_a_missing_snapshot_is_not_compliant(prod_snapshot):
-    job = load_job()
-    inventory, results, scores, reports = job.build(CFG, "42", datetime(2026, 11, 7, tzinfo=timezone.utc),
+    inventory, results, scores, reports = validate.build(CFG, "42", datetime(2026, 11, 7, tzinfo=timezone.utc),
                                                     [prod_snapshot])
     assert {s["environment"]: s["compliant"] for s in scores} == {"dev": False, "prod": False}
     dev = next(s for s in scores if s["environment"] == "dev")
@@ -249,7 +239,8 @@ def test_build_scores_every_workspace_and_a_missing_snapshot_is_not_compliant(pr
     assert prod["worst"] == "high" and prod["owner"] == ADMIN
     assert prod["passed"] + prod["failed"] + prod["exceptions"] + prod["errors"] == prod["checks"]
     assert len(inventory) == len(prod_snapshot["observations"])
-    assert set(results[0]) >= set(job.RESULTS_COLUMNS)
+    assert set(results[0]) >= set(validate.RESULTS_COLUMNS)
+    assert set(inventory[0]) == set(validate.INVENTORY_COLUMNS)
     md = reports["prod"]
     assert md.startswith("### prod: 🔴") and "REVOKE SELECT, USE SCHEMA" in md and "```sql" in md
     assert md.index("| high |") < md.index("| medium |") < md.index("| low |"), "worst first"
@@ -267,3 +258,13 @@ def test_a_clean_workspace_reports_compliant():
     score = rules.compliance("prod", res)
     assert score["compliant"] and score["score"] == 100.0
     assert "Every check passed" in report.markdown({**score}, res)
+
+
+def test_the_job_runs_the_notebook_and_the_notebook_uses_the_library():
+    job = yaml.safe_load((ROOT / "resources" / "governance.yml").read_text(encoding="utf-8"))["resources"]["jobs"]
+    task = job["workspace_governance"]["tasks"][0]["notebook_task"]
+    nb = ROOT / "resources" / task["notebook_path"]
+    text = nb.resolve().read_text(encoding="utf-8")
+    assert text.startswith("# Databricks notebook source"), "deployed as a notebook, not a file"
+    assert "validate.build(" in text and 'dbutils.widgets.text("run_id"' in text
+    assert [p["name"] for p in job["workspace_governance"]["parameters"]] == ["run_id"]

@@ -38,13 +38,13 @@ and prod APIs without cross-workspace network policies).
 databricks.yml                         Databricks Asset Bundle, target "governance" (the governance workspace)
 config/governance.yml                  Workspace governance: the estate, the standard, the exceptions
 resources/governance.yml               The estate schema and snapshots volume, and the workspace-governance job
-src/govern/                            collect (observe), rules (judge), report (act): plain Python, unit tested
-src/jobs/governance_validate.py        The job: snapshots -> inventory, results and compliance tables, one report each
+src/govern/                            collect (observe), rules (judge), report (act), validate: plain Python, unit tested
+src/notebooks/workspace_governance.py  The job (a Databricks notebook): snapshots -> inventory, results, compliance, reports
 .github/workflows/governance.yml       On demand: collect every workspace, validate centrally, one issue per workspace
 config/drift.yml                       Drift detection: which workspaces and stacks, who the pipelines are, what to watch
 resources/drift.yml                    The drift schema and volume, and the terraform-drift-audit job
-src/drift/                             config, plan findings, audit query and remediation (plain Python, unit tested)
-src/jobs/drift_audit.py                The job: plan findings + system.access.audit -> findings and health tables
+src/drift/                             config, plan findings, audit query, remediation, findings (plain Python, unit tested)
+src/notebooks/terraform_drift_audit.py The job (a Databricks notebook): plan findings + system.access.audit -> findings, health
 tests/                                 pytest
 .github/workflows/drift.yml            On demand (daily schedule off): plan on every stack, drift issues, then the audit job
 .github/workflows/ci.yml               Pull requests: unit tests. Run workflow: validate and deploy any branch
@@ -70,6 +70,7 @@ Run workflow  .github/workflows/governance.yml   (on demand; a daily schedule is
              -> snapshot <env>.json: observations in one shape, and anything that could not be read
   validate   upload the snapshots + governance.yml to /Volumes/dbxarchitectlab_governance/estate/snapshots/<run id>/
              databricks bundle run workspace_governance   (governance workspace, as sp-dbx-governance)
+               the notebook src/notebooks/workspace_governance.py, one cell per step, on serverless
                every rule in src/govern/rules.py against every snapshot, with the run's own standard
                -> dbxarchitectlab_governance.estate.inventory    what exists, per run (history)
                -> dbxarchitectlab_governance.estate.results      one row per rule evaluation: PASS, FAIL, EXCEPTION or ERROR
@@ -99,6 +100,11 @@ which can write. In production, give them a dedicated, least-privileged collecto
 | Act | `src/govern/report.py` + the workflow's issues | Who owns the fix | How it was found |
 
 A new rule never touches a collector; a new source never touches a rule.
+
+The job is a Databricks notebook, so its run page shows each step and ends with this run's scorecard and failures.
+Everything it computes is in `src/govern/validate.py`, plain Python the unit tests cover; the notebook only reads the
+volume, writes the tables and displays them. The `src/govern` modules stay `.py` files, not notebooks, because the
+collector in GitHub Actions and the tests import them.
 
 ### The rules
 
@@ -198,6 +204,7 @@ Run workflow  .github/workflows/drift.yml   (the daily 06:00 UTC schedule is off
               1 error        -> the job fails
   audit     upload the findings to /Volumes/dbxarchitectlab_governance/drift/plan_findings/<run id>/
             databricks bundle run drift_audit   (governance workspace, as sp-dbx-governance)
+              the notebook src/notebooks/terraform_drift_audit.py, one cell per step, on serverless
               system.access.audit: watched changes in dev and prod by anyone but the pipelines
               -> dbxarchitectlab_governance.drift.findings   one row per finding, both sides, with the remediation
               -> dbxarchitectlab_governance.drift.health     one row per environment and run: in sync or not
