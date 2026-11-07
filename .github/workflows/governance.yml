@@ -1,0 +1,164 @@
+name: Workspace governance
+# The run's title in the Actions list: scheduled, or who started it.
+run-name: "${{ github.event_name == 'schedule' && 'Governance check (daily)' || format('Governance check (@{0})', github.actor) }}"
+
+# On demand (Actions › Workspace governance › Run workflow): every workspace in config/governance.yml checked against
+# the standard.
+#   estate     read the estate: one collector per workspace
+#   collect    (per workspace) read its catalogs, grants, owners, storage, compute, jobs and settings through its API:
+#              read-only, one snapshot (JSON). Observation only; no rules here.
+#   validate   upload the snapshots and the standard to the governance workspace and run the workspace-governance job:
+#              inventory, results and compliance tables, and one report per workspace
+#   remediate  (per workspace) open or update the issue "Governance: <environment>" for its owner, or close it when
+#              the workspace is compliant again
+on:
+  # Off for now, like the drift check. To run it every morning, uncomment these two lines.
+  # schedule:
+  #   - cron: "30 6 * * *"   # 06:30 UTC, after the drift check
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One governance check at a time; a second one waits.
+concurrency:
+  group: governance
+  cancel-in-progress: false
+
+jobs:
+  estate:
+    name: Read config/governance.yml
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      volume: /Volumes/${{ steps.config.outputs.catalog }}/${{ steps.config.outputs.schema }}/${{ steps.config.outputs.volume }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml
+      - id: config
+        env:
+          PYTHONPATH: src
+        run: |
+          echo "matrix=$(python -m govern.cli matrix --config config/governance.yml)" >> "$GITHUB_OUTPUT"
+          python -m govern.cli output --config config/governance.yml >> "$GITHUB_OUTPUT"
+          python -m govern.cli matrix --config config/governance.yml \
+            | jq -r '.include[] | "- \(.environment) (\(.tier)): \(.host)"' | tee -a "$GITHUB_STEP_SUMMARY"
+
+  collect:
+    name: Collect ${{ matrix.environment }}
+    needs: estate
+    runs-on: ubuntu-latest
+    # The drift environment's service principal (sp-dbx-platform-infra) can already read every workspace: the drift
+    # plans use it the same way. The collector only sends GET requests.
+    environment: drift
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.estate.outputs.matrix) }}
+    env:
+      ARM_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      DATABRICKS_AUTH_TYPE: azure-client-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml databricks-sdk
+      - name: Snapshot ${{ matrix.environment }}
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m govern.cli collect --config config/governance.yml --env "${{ matrix.environment }}" \
+            --out "snapshots/${{ matrix.environment }}.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-${{ matrix.environment }}
+          path: snapshots/
+
+  validate:
+    name: Validate in the governance workspace
+    needs: [estate, collect]
+    if: always() && needs.estate.result == 'success'
+    runs-on: ubuntu-latest
+    environment: governance
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_AUTH_TYPE: oauth-m2m
+      RUN: ${{ needs.estate.outputs.volume }}/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: snapshot-*
+          path: snapshots
+          merge-multiple: true
+      # The standard travels with the snapshots: the job checks against the one this run used, from this branch.
+      - name: Upload the snapshots and the standard to the volume
+        run: |
+          mkdir -p snapshots && cp config/governance.yml snapshots/
+          ls snapshots
+          databricks fs cp -r snapshots "dbfs:$RUN" --overwrite
+      - name: Run workspace-governance
+        run: databricks bundle run workspace_governance -t governance --params "run_id=${{ github.run_id }}"
+      - name: Download the reports
+        run: |
+          databricks fs cp -r "dbfs:$RUN/report" report --overwrite
+          cat report/*.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: governance-report
+          path: report/
+
+  remediate:
+    name: Issue for ${{ matrix.environment }}
+    needs: [estate, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.estate.outputs.matrix) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ENV_NAME: ${{ matrix.environment }}
+      TITLE: "Governance: ${{ matrix.environment }}"
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: governance-report
+          path: report
+      # One open issue per workspace while it is not compliant, labelled with its owner and the worst severity:
+      # opened on the first failure, commented on every later run, closed when the workspace is compliant again.
+      - name: Open, update or close the issue
+        run: |
+          read -r compliant owner worst < <(jq -r --arg e "$ENV_NAME" \
+            '.environments[] | select(.environment == $e) | "\(.compliant) \(.owner) \(.worst)"' report/summary.json)
+          gh label create governance --color 5319E7 --description "Workspace governance" --force > /dev/null
+          gh label create "owner:$owner" --color 0E8A16 --force > /dev/null
+          issue=$(gh issue list --label governance --state open --search "in:title \"$TITLE\"" --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          body="$(cat "report/$ENV_NAME.md")"$'\n\n'"Run: $RUN_URL"
+          if [[ "$compliant" == "true" ]]; then
+            if [[ -n "$issue" ]]; then
+              gh issue close "$issue" --comment "Compliant again. $RUN_URL"
+            fi
+          else
+            gh label create "severity:$worst" --color FBCA04 --force > /dev/null
+            if [[ -n "$issue" ]]; then
+              gh issue edit "$issue" --add-label "severity:$worst"
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$TITLE" --label governance --label "owner:$owner" --label "severity:$worst" \
+                --body "$body"
+            fi
+          fi

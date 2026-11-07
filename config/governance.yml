@@ -1,0 +1,79 @@
+# Workspace governance: the estate, the standard, and the exceptions. The one file to change to scale out.
+#
+#   Add a workspace:      add an entry under estate (its ID, URL, catalog, tier and owner).
+#   Change the standard:  edit standard; every workspace is checked against it on the next run.
+#   Accept a violation:   add an exception, with a reason, who approved it and an end date.
+#
+# The governance workflow (.github/workflows/governance.yml) collects one snapshot per estate entry, and the
+# workspace-governance job (governance workspace) checks every snapshot against the standard. Nothing else names a
+# workspace. The rules themselves are code (src/govern/rules.py); what they expect is here.
+
+# One entry per governed workspace. Observation runs per workspace; judgement runs once, centrally.
+estate:
+  dev:
+    workspace_id: 7405609089943919
+    host: https://adb-7405609089943919.19.azuredatabricks.net
+    catalog: dbxarchitectlab_dev               # the environment's own catalog: walked schema by schema
+    tier: nonprod                              # nonprod | prod: which rules apply (rules.py, tiers)
+    owner: DBX_Architect_Lab_Admin             # who remediates: the label on the workspace's governance issue
+    storage_roots:                             # where this environment's data may live
+      - abfss://dbx-architect-lab-dev@stdbxarchlabdev.dfs.core.windows.net/
+  prod:
+    workspace_id: 7405604784566671
+    host: https://adb-7405604784566671.11.azuredatabricks.net
+    catalog: dbxarchitectlab_prod
+    tier: prod
+    owner: DBX_Architect_Lab_Admin
+    storage_roots:
+      - abfss://dbx-architect-lab-prod@stdbxarchlabprod.dfs.core.windows.net/
+  # uat:
+  #   workspace_id: <workspace ID>
+  #   host: https://adb-<workspace ID>.<n>.azuredatabricks.net
+  #   catalog: dbxarchitectlab_uat
+  #   tier: nonprod
+  #   owner: <owning group>
+  #   storage_roots: [abfss://dbx-architect-lab-uat@stdbxarchlabuat.dfs.core.windows.net/]
+
+# The enterprise standard: the expected state, as data. Rules read it; collectors never do.
+standard:
+  # Grants go to groups from the identity provider and to the pipelines' service principals, never to people.
+  approved_groups: [DBX_Architect_Lab_Admin]
+  service_principals:                          # application IDs
+    - name: sp-dbx-platform-infra              # Terraform: dbx-platform-infra-azure
+      application_id: 6eab1957-6c50-4f47-964b-c89be78ab1f1
+    - name: sp-dbx-lakehouse                   # bundles: dbx-lakehouse-ai-bi
+      application_id: 9a769c8e-a44b-4009-9378-719753df14c7
+    - name: sp-dbx-governance                  # this repository
+      application_id: d81cb8b1-92e7-4ab2-ac47-0143a2a1d6fc
+  # Privileges that manage, not use. Only the admin groups and the pipelines may hold them.
+  high_risk_privileges: [ALL_PRIVILEGES, MANAGE]
+  admin_groups: [DBX_Architect_Lab_Admin]
+  # Catalogs any workspace may see besides its own.
+  shared_catalogs: [system, samples, hive_metastore, __databricks_internal]
+  schema_name_pattern: "^[a-z][a-z0-9_]*$"
+  compute:
+    required_tags: [workload]                  # on every all-purpose cluster
+    max_autotermination_minutes: 240
+    max_warehouse_auto_stop_minutes: 30
+  # Workspace settings (workspace-conf keys) and their required values, per tier.
+  workspace_settings:
+    prod:
+      enableDbfsFileBrowser: "false"
+    nonprod: {}
+
+# Explicit, time-bound exceptions. A matching failure becomes EXCEPTION until the end date, then FAIL again.
+# object and principal are patterns (* matches anything); environment "*" means every workspace.
+exceptions:
+  - rule: [IAM-01, IAM-03]                     # one rule, or a list
+    environment: "*"
+    object: "*"
+    principal: dbxarchitectlab@gmail.com
+    reason: The lab owner's personal grants in catalog-config.yaml, until the lab has an IdP group for its users.
+    approved_by: DBX_Architect_Lab_Admin
+    expires: 2027-03-31
+
+# Where the results go, in the governance workspace: snapshots to the volume, tables to the schema.
+output:
+  catalog: dbxarchitectlab_governance
+  schema: estate
+  volume: snapshots

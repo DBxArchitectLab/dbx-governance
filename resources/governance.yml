@@ -1,0 +1,34 @@
+resources:
+  # Where workspace governance lives in the governance catalog. The names must match config/governance.yml (output).
+  schemas:
+    estate:
+      catalog_name: dbxarchitectlab_governance
+      name: estate
+      comment: Workspace governance for the estate in config/governance.yml (inventory, results, compliance).
+
+  volumes:
+    # The governance workflow uploads each run's snapshots (and the standard they are checked against) here, one
+    # folder per GitHub run ID; the job writes the run's reports next to them.
+    snapshots:
+      catalog_name: dbxarchitectlab_governance
+      schema_name: ${resources.schemas.estate.name}
+      name: snapshots
+      volume_type: MANAGED
+
+  jobs:
+    # Validate centrally. No schedule: the governance workflow (.github/workflows/governance.yml) starts it after the
+    # collectors, with its run ID. Run it by hand with run_id = an earlier run's ID to check those snapshots again.
+    workspace_governance:
+      name: workspace-governance
+      max_concurrent_runs: 1
+      parameters:
+        - name: run_id
+          default: manual
+      tasks:
+        # A notebook on serverless compute: each step is a cell, and the run page shows the scorecard and the failures.
+        # The job parameter run_id reaches the notebook's run_id widget.
+        - task_key: validate
+          notebook_task:
+            notebook_path: ../src/notebooks/workspace_governance.py
+            base_parameters:
+              config: ${workspace.file_path}/config/governance.yml
