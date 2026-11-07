@@ -102,8 +102,11 @@ A typo fails the first step with the field that is wrong (`src/drift/config.py`)
 1. **The drift GitHub environment.** This repository › Settings › Environments › New environment `drift`, with the
    same secrets as the infra repository's deploy: `SP_CLIENT_ID`, `SP_CLIENT_SECRET`, `AZURE_TENANT_ID`,
    `AZURE_SUBSCRIPTION_ID`, `DATABRICKS_ACCOUNT_ID`, `DATABRICKS_METASTORE_ID` (`sp-dbx-platform-infra`).
-2. **Its federated credential.** On `sp-dbx-platform-infra`'s app registration, add a federated credential for subject
-   `repo:DBxArchitectLab/dbx-governance:environment:drift` (as in the infra README, step 6), so the Azure login works.
+2. **Its federated credential.** On `sp-dbx-platform-infra`'s app registration, add a federated credential (as in the
+   infra README, step 6), so the Azure login works. This organisation's OIDC tokens use the ID-based subject, so the
+   subject is `repo:DBxArchitectLab@336295900/dbx-governance@1424823529:environment:drift` (owner ID, repository ID),
+   issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`. If `azure/login` fails
+   with `AADSTS700213`, copy the subject from its log into the credential.
 3. **The governance identity's data access.** `sp-dbx-governance` (`d81cb8b1-92e7-4ab2-ac47-0143a2a1d6fc`) needs
    `USE CATALOG` and `CREATE SCHEMA` on `dbxarchitectlab_governance`: add its application ID to `grant_principals` in
    `live/governance/workspace-bootstrap/catalog-config.yaml` (infra repository) and apply. And read access to the audit

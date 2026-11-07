@@ -162,7 +162,11 @@ jobs:
             --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
           body="$(cat "$RUNNER_TEMP/summary.md")"$'\n\n'"Run: $RUN_URL"
           if [[ "$STATUS" == "clean" ]]; then
-            [[ -n "$issue" ]] && gh issue close "$issue" --comment "Clean again: plan exit code 0. $RUN_URL"
+            # An if, not `[[ ... ]] && ...`: with no open issue that test is false, and as the step's last command it
+            # would fail a clean stack.
+            if [[ -n "$issue" ]]; then
+              gh issue close "$issue" --comment "Clean again: plan exit code 0. $RUN_URL"
+            fi
           elif [[ -n "$issue" ]]; then
             gh issue comment "$issue" --body "$body"
           else
