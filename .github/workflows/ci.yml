@@ -2,9 +2,10 @@ name: CI and deploy
 # The run's title in the Actions list: what ran, from which branch, and who started it.
 run-name: "${{ format('{0} {1} → governance (@{2})', inputs.deploy && 'Deploy' || 'Validate', github.ref_name, github.actor) }}"
 
-# Run workflow: the selected branch ("Use workflow from") validated and, with "Deploy" ticked (the default), deployed to
-# the governance workspace.
+# Every pull request: the unit tests. Run workflow: the selected branch ("Use workflow from") validated and, with
+# "Deploy" ticked (the default), deployed to the governance workspace.
 on:
+  pull_request:
   workflow_dispatch:
     inputs:
       deploy:
@@ -16,8 +17,21 @@ permissions:
   contents: read
 
 jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml pytest
+      - run: pytest -q tests
+
   deploy:
     name: Deploy to governance workspace
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
     runs-on: ubuntu-latest
     environment: governance
     env:

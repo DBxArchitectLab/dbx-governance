@@ -1,0 +1,41 @@
+resources:
+  # Where the drift results live in the governance catalog. The names must match config/drift.yml (output).
+  schemas:
+    drift:
+      catalog_name: dbxarchitectlab_governance
+      name: drift
+      comment: Terraform drift detection and audit for the workspaces of dbx-platform-infra-azure (findings, health).
+
+  volumes:
+    # The drift workflow uploads each run's plan findings here, one folder per GitHub run ID.
+    plan_findings:
+      catalog_name: dbxarchitectlab_governance
+      schema_name: ${resources.schemas.drift.name}
+      name: plan_findings
+      volume_type: MANAGED
+
+  jobs:
+    # The audit side of drift detection. No schedule: the drift workflow (.github/workflows/drift.yml) starts it after
+    # the plans, with its run ID. Run it by hand with run_id = an earlier run's ID to re-read those plans.
+    drift_audit:
+      name: terraform-drift-audit
+      max_concurrent_runs: 1
+      parameters:
+        - name: run_id
+          default: manual
+      tasks:
+        - task_key: audit
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/jobs/drift_audit.py
+            parameters:
+              - --config
+              - ${workspace.file_path}/config/drift.yml
+              - --run-id
+              - "{{job.parameters.run_id}}"
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - pyyaml
