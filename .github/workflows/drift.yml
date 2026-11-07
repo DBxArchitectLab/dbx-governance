@@ -2,16 +2,17 @@ name: Terraform drift
 # The run's title in the Actions list: daily, or who started it.
 run-name: "${{ github.event_name == 'schedule' && 'Drift check (daily)' || format('Drift check (@{0})', github.actor) }}"
 
-# Every morning, and on demand: terraform plan on every stack in config/drift.yml, against the infra repository's main
-# branch and state. Plan only; this workflow never applies.
+# On demand (Actions › Terraform drift › Run workflow): terraform plan on every stack in config/drift.yml, against the
+# infra repository's main branch and state. Plan only; this workflow never applies.
 #   exit code 0: clean. The stack's open drift issue, if any, is closed.
 #   exit code 2: changes. A drift issue is opened (or updated) with what changed and what to do.
 #   exit code 1: error. The job fails.
 # Then the plan findings go to the governance workspace, and the terraform-drift-audit job adds who changed what
 # (system.access.audit) and writes the findings and health tables.
 on:
-  schedule:
-    - cron: "0 6 * * *"      # 06:00 UTC
+  # The daily schedule is off for now. To run it every morning, uncomment these two lines.
+  # schedule:
+  #   - cron: "0 6 * * *"    # 06:00 UTC
   workflow_dispatch:
 
 permissions:
