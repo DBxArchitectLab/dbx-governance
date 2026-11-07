@@ -1,0 +1,215 @@
+name: Terraform drift
+# The run's title in the Actions list: daily, or who started it.
+run-name: "${{ github.event_name == 'schedule' && 'Drift check (daily)' || format('Drift check (@{0})', github.actor) }}"
+
+# Every morning, and on demand: terraform plan on every stack in config/drift.yml, against the infra repository's main
+# branch and state. Plan only; this workflow never applies.
+#   exit code 0: clean. The stack's open drift issue, if any, is closed.
+#   exit code 2: changes. A drift issue is opened (or updated) with what changed and what to do.
+#   exit code 1: error. The job fails.
+# Then the plan findings go to the governance workspace, and the terraform-drift-audit job adds who changed what
+# (system.access.audit) and writes the findings and health tables.
+on:
+  schedule:
+    - cron: "0 6 * * *"      # 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One drift check at a time; a second one waits.
+concurrency:
+  group: drift
+  cancel-in-progress: false
+
+jobs:
+  stacks:
+    name: Read config/drift.yml
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      repository: ${{ steps.config.outputs.repository }}
+      ref: ${{ steps.config.outputs.ref }}
+      terraform_version: ${{ steps.config.outputs.terraform_version }}
+      terragrunt_version: ${{ steps.config.outputs.terragrunt_version }}
+      state_storage_account: ${{ steps.config.outputs.state_storage_account }}
+      state_resource_group: ${{ steps.config.outputs.state_resource_group }}
+      volume: /Volumes/${{ steps.config.outputs.output_catalog }}/${{ steps.config.outputs.output_schema }}/${{ steps.config.outputs.output_volume }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml
+      - id: config
+        env:
+          PYTHONPATH: src
+        run: |
+          echo "matrix=$(python -m drift.cli matrix --config config/drift.yml)" >> "$GITHUB_OUTPUT"
+          python -m drift.cli infra --config config/drift.yml >> "$GITHUB_OUTPUT"
+          python -m drift.cli matrix --config config/drift.yml \
+            | jq -r '.include[] | "- \(.key): \(.path) (\(.severity))"' | tee -a "$GITHUB_STEP_SUMMARY"
+
+  plan:
+    name: Plan ${{ matrix.key }}
+    needs: stacks
+    runs-on: ubuntu-latest
+    # The drift environment holds the credentials of the infra repository's deployment service principal
+    # (sp-dbx-platform-infra): it can read the state and every object the stacks manage. This workflow only plans.
+    environment: drift
+    permissions:
+      contents: read
+      id-token: write    # Azure login with GitHub OIDC
+      issues: write      # open, update and close drift issues
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.stacks.outputs.matrix) }}
+    env:
+      TG_NON_INTERACTIVE: "true"
+      ARM_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      DATABRICKS_ACCOUNT_ID: ${{ secrets.DATABRICKS_ACCOUNT_ID }}
+      DATABRICKS_METASTORE_ID: ${{ secrets.DATABRICKS_METASTORE_ID }}
+      # The same identity as the infra deploy, so the grants the stacks add for it plan as unchanged.
+      DEPLOY_SP_APPLICATION_ID: ${{ secrets.SP_CLIENT_ID }}
+      STATE_ACCOUNT: ${{ needs.stacks.outputs.state_storage_account }}
+      STATE_RG: ${{ needs.stacks.outputs.state_resource_group }}
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out ${{ needs.stacks.outputs.repository }}@${{ needs.stacks.outputs.ref }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.stacks.outputs.repository }}
+          ref: ${{ needs.stacks.outputs.ref }}
+          path: infra
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.SP_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ needs.stacks.outputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          curl -fsSL -o terragrunt "https://github.com/gruntwork-io/terragrunt/releases/download/v${{ needs.stacks.outputs.terragrunt_version }}/terragrunt_linux_amd64"
+          sudo install -m 0755 terragrunt /usr/local/bin/terragrunt
+          rm terragrunt
+
+      - name: Allow runner IP on state storage firewall
+        run: |
+          RUNNER_IP=$(curl -fsS --max-time 10 https://api.ipify.org)
+          echo "RUNNER_IP=$RUNNER_IP" >> "$GITHUB_ENV"
+          az storage account network-rule add --account-name "$STATE_ACCOUNT" --resource-group "$STATE_RG" \
+            --subscription "$ARM_SUBSCRIPTION_ID" --ip-address "$RUNNER_IP" --output none
+          sleep 30
+
+      # -detailed-exitcode: 0 = no changes, 1 = error, 2 = changes. A short lock wait, in case a deploy is running.
+      - name: Plan
+        id: plan
+        working-directory: infra/${{ matrix.path }}
+        run: |
+          set +e
+          terragrunt init -no-color > "$RUNNER_TEMP/init.log" 2>&1 \
+            && terragrunt plan -detailed-exitcode -lock-timeout=5m -no-color -out=tfplan 2>&1 | tee "$RUNNER_TEMP/plan.log"
+          code=${PIPESTATUS[0]}
+          [[ -s "$RUNNER_TEMP/plan.log" ]] || { cat "$RUNNER_TEMP/init.log"; code=1; }
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          if [[ "$code" == 2 ]]; then terragrunt show -json tfplan > "$RUNNER_TEMP/plan.json" 2> /dev/null; fi
+
+      # Only resource addresses and attribute names go into the findings: the plan itself can hold secrets.
+      - name: Findings
+        id: findings
+        env:
+          PYTHONPATH: src
+        run: |
+          export INFRA_SHA=$(git -C infra rev-parse --short HEAD)
+          python -m drift.cli report --config config/drift.yml --key "${{ matrix.key }}" \
+            --exit-code "${{ steps.plan.outputs.exit_code }}" --plan "$RUNNER_TEMP/plan.json" \
+            --out "findings/${{ matrix.key }}.json" | tee "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "status=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' findings/${{ matrix.key }}.json)" >> "$GITHUB_OUTPUT"
+
+      # One open issue per stack while it drifts: opened on the first drift, commented on every later run, closed
+      # when the plan is clean again.
+      - name: Drift issue
+        if: steps.findings.outputs.status != 'error'
+        env:
+          TITLE: "Drift: ${{ matrix.environment }} / ${{ matrix.stack }}"
+          STATUS: ${{ steps.findings.outputs.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create drift --color B60205 --description "Terraform drift" --force > /dev/null
+          gh label create "severity:${{ matrix.severity }}" --color FBCA04 --force > /dev/null
+          issue=$(gh issue list --label drift --state open --search "in:title \"$TITLE\"" --json number,title \
+            --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")
+          body="$(cat "$RUNNER_TEMP/summary.md")"$'\n\n'"Run: $RUN_URL"
+          if [[ "$STATUS" == "clean" ]]; then
+            [[ -n "$issue" ]] && gh issue close "$issue" --comment "Clean again: plan exit code 0. $RUN_URL"
+          elif [[ -n "$issue" ]]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$TITLE" --label drift --label "severity:${{ matrix.severity }}" --body "$body"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drift-${{ matrix.key }}
+          path: findings/
+          if-no-files-found: ignore
+
+      - name: Remove runner IP from state storage firewall
+        if: always() && env.RUNNER_IP != ''
+        run: |
+          az storage account network-rule remove --account-name "$STATE_ACCOUNT" --resource-group "$STATE_RG" \
+            --subscription "$ARM_SUBSCRIPTION_ID" --ip-address "$RUNNER_IP" --output none
+
+      - name: Fail on a plan error
+        if: steps.plan.outputs.exit_code == '1'
+        run: |
+          echo "::error::terraform plan failed for ${{ matrix.path }}"
+          exit 1
+
+  audit:
+    name: Audit in the governance workspace
+    needs: [stacks, plan]
+    if: always() && needs.stacks.result == 'success'
+    runs-on: ubuntu-latest
+    environment: governance
+    env:
+      DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+      DATABRICKS_AUTH_TYPE: oauth-m2m
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: drift-*
+          path: findings
+          merge-multiple: true
+      - name: Upload the plan findings to the volume
+        run: |
+          ls findings
+          databricks fs cp -r findings "dbfs:${{ needs.stacks.outputs.volume }}/${{ github.run_id }}" --overwrite
+      - name: Run terraform-drift-audit
+        run: databricks bundle run drift_audit -t governance --params "run_id=${{ github.run_id }}"

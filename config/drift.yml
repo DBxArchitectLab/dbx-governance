@@ -1,0 +1,65 @@
+# Terraform drift detection and audit: the one file to change to scale out.
+#
+#   Add a workspace:   add an entry under environments (its workspace ID and the stacks to plan).
+#   Add a stack:       add its folder name to that environment's stacks (live/<environment>/<stack> in the infra repo).
+#   Watch more:        add service and action names under audit.watched (system.access.audit).
+#
+# The drift workflow (.github/workflows/drift.yml) builds its job list from this file, and the drift-audit job reads
+# it in the governance workspace. Nothing else names an environment.
+
+# The infrastructure repository whose Terragrunt stacks are planned. It is public, so no token is needed to check it
+# out; the versions and the state backend must match its own deploy workflow (terragrunt-deploy.yml).
+infra:
+  repository: DBxArchitectLab/dbx-platform-infra-azure
+  ref: main
+  live_root: live
+  terraform_version: "1.14.6"
+  terragrunt_version: "0.99.4"
+  state_storage_account: adlsdbxarchitectlab
+  state_resource_group: rg-dbx-architect-lab
+
+# One entry per workspace. severity is copied onto its findings and its drift issues' labels.
+environments:
+  dev:
+    workspace_id: 7405609089943919
+    stacks: [workspace, workspace-bootstrap]
+    severity: low
+  prod:
+    workspace_id: 7405604784566671
+    stacks: [workspace, workspace-bootstrap]
+    severity: high
+  # uat:
+  #   workspace_id: <workspace ID>
+  #   stacks: [workspace, workspace-bootstrap]
+  #   severity: medium
+
+# Identities whose changes are the pipelines' own (in the audit log, a service principal is its application ID).
+# A change to a watched object by anyone else is a manual change.
+pipeline_identities:
+  - name: sp-dbx-platform-infra      # Terraform: dbx-platform-infra-azure
+    application_id: 6eab1957-6c50-4f47-964b-c89be78ab1f1
+  - name: sp-dbx-lakehouse           # bundles: dbx-lakehouse-ai-bi
+    application_id: 9a769c8e-a44b-4009-9378-719753df14c7
+  - name: sp-dbx-governance          # this repository
+    application_id: d81cb8b1-92e7-4ab2-ac47-0143a2a1d6fc
+
+audit:
+  lookback_days: 7
+  # The kinds of objects Terraform manages in these workspaces, as service_name: [action_name, ...] in
+  # system.access.audit. A watched create that the plan cannot see is an object created outside Terraform.
+  watched:
+    unityCatalog: [createCatalog, updateCatalog, deleteCatalog, updatePermissions,
+                   createExternalLocation, updateExternalLocation, deleteExternalLocation,
+                   createStorageCredential, updateStorageCredential, deleteStorageCredential]
+    clusterPolicies: [create, edit, delete, changeClusterPolicyAcl]
+    secrets: [createScope, deleteScope, putAcl, deleteAcl]
+    databrickssql: [createWarehouse, editWarehouse, deleteWarehouse]
+    workspace: [workspaceConfEdit, setSetting, deleteSetting]
+    accounts: [createGroup, removeGroup, addPrincipalToGroup, removePrincipalFromGroup]
+
+# Where the results go, in the governance workspace: the plan findings are uploaded to the volume, and the tables
+# (findings, health) are written to the schema.
+output:
+  catalog: dbxarchitectlab_governance
+  schema: drift
+  volume: plan_findings

@@ -5,7 +5,7 @@ include:
   - resources/*.yml
 
 targets:
-  # The dedicated governance workspace. The jobs reach dev, uat and prod through the account and workspace APIs.
+  # The dedicated governance workspace. Its jobs see dev and prod through the account-wide system tables.
   governance:
     mode: production
     default: true
