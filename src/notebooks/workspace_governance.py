@@ -5,16 +5,23 @@
 # MAGIC Runs in the **governance workspace** as `sp-dbx-governance`, started by the governance workflow
 # MAGIC (`.github/workflows/governance.yml`) after its collectors, with the GitHub run ID.
 # MAGIC
-# MAGIC 1. Reads the run's snapshots from the volume (one JSON per workspace) and the standard they are checked
-# MAGIC    against: the `governance.yml` uploaded with them, or the deployed copy when there is none.
-# MAGIC 2. Builds one inventory and checks every workspace against the standard (`src/govern/rules.py`).
-# MAGIC 3. Appends to `estate.inventory` (observed objects), `estate.results` (one row per rule evaluation) and
-# MAGIC    `estate.compliance` (one scorecard per workspace and run).
-# MAGIC 4. Writes `report/<environment>.md` and `report/summary.json` next to the snapshots: the workflow turns them
-# MAGIC    into one issue per workspace.
+# MAGIC Four metadata sources, one standard:
 # MAGIC
-# MAGIC It never calls a dev or prod API: observation happened in the collectors; judgement happens here.
-# MAGIC To check an earlier run again: **Run now with different parameters** › `run_id` = that run's GitHub run ID.
+# MAGIC | Source | Collected | Where |
+# MAGIC | --- | --- | --- |
+# MAGIC | Workspace API | per workspace, by the workflow | `<run id>/<env>.json` |
+# MAGIC | Information schema | per workspace, on its own SQL warehouse, by the workflow | `<run id>/<env>.json` |
+# MAGIC | Account API | once, by the workflow | `<run id>/account.json` |
+# MAGIC | System tables | here, for every workspace at once | `system.access.table_lineage`, `system.compute.clusters` |
+# MAGIC
+# MAGIC 1. Reads the run's snapshots and the standard they are checked against (the `governance.yml` uploaded with them).
+# MAGIC 2. Queries the system tables.
+# MAGIC 3. Checks every workspace, and the account, against the standard (`src/govern/rules.py`, through `validate.py`).
+# MAGIC 4. Appends to `estate.inventory`, `estate.results` and `estate.compliance`, and writes one report per scope
+# MAGIC    for the workflow's issues.
+# MAGIC
+# MAGIC It never calls a dev or prod API. To check an earlier run again: **Run now with different parameters** ›
+# MAGIC `run_id` = that run's GitHub run ID.
 
 # COMMAND ----------
 
@@ -41,7 +48,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from govern import config, rules, validate
+from govern import config, report, rules, systables, validate
 
 # COMMAND ----------
 
@@ -59,48 +66,59 @@ cfg = config.load(folder / "governance.yml") if (folder / "governance.yml").is_f
 schema = f"{out['catalog']}.{out['schema']}"
 
 snapshots = validate.read_snapshots(folder)
-print(f"run {run_id}: {len(snapshots)} snapshots from {folder}; standard: "
-      f"{'the run' if cfg is not deployed else 'deployed'} copy; {len(rules.RULES)} rules")
+for s in snapshots:
+    print(f"{s['environment']}: {len(s['observations'])} observations, {len(s['errors'])} errors")
+print(f"standard: {'the run' if cfg is not deployed else 'deployed'} copy; {len(rules.RULES)} rules")
 
 # COMMAND ----------
 
-# MAGIC %md ## 2. Judge: every workspace against the standard
+# MAGIC %md ## 2. System tables: every workspace, one query each
 
 # COMMAND ----------
 
-inventory, results, scores, reports = validate.build(cfg, run_id, datetime.now(timezone.utc), snapshots)
+for name, sql in systables.queries(cfg).items():
+    print(f"-- {name}\n{sql}\n")
+system = systables.collect(lambda sql: [r.asDict(recursive=True) for r in spark.sql(sql).collect()], cfg)
+for env, part in system.items():
+    print(f"{env}: {len(part['observations'])} observations, errors: {[e['domain'] for e in part['errors']] or 'none'}")
+
+# COMMAND ----------
+
+# MAGIC %md ## 3. Judge: every workspace, and the account, against the standard
+
+# COMMAND ----------
+
+inventory, results, scores, reports = validate.build(cfg, run_id, datetime.now(timezone.utc), snapshots, system)
 print(f"{len(inventory)} objects observed; {len(results)} checks")
 
 # COMMAND ----------
 
-# MAGIC %md ## 3. Record: inventory, results, compliance
+# MAGIC %md ## 4. Record: inventory, results, compliance
 
 # COMMAND ----------
 
 if inventory:
     (spark.createDataFrame([tuple(r[c] for c in validate.INVENTORY_COLUMNS) for r in inventory],
                            schema=validate.INVENTORY_SCHEMA)
-     .write.mode("append").saveAsTable(f"{schema}.inventory"))
+     .write.mode("append").option("mergeSchema", "true").saveAsTable(f"{schema}.inventory"))
 if results:
     (spark.createDataFrame([tuple(r[c] for c in validate.RESULTS_COLUMNS) for r in results],
                            schema=validate.RESULTS_SCHEMA)
-     .write.mode("append").saveAsTable(f"{schema}.results"))
+     .write.mode("append").option("mergeSchema", "true").saveAsTable(f"{schema}.results"))
 spark.createDataFrame(scores).write.mode("append").option("mergeSchema", "true").saveAsTable(f"{schema}.compliance")
 
 # COMMAND ----------
 
-# MAGIC %md ## 4. Act: one report per workspace, for the workflow's issues
+# MAGIC %md ## 5. Act: one report per scope, for the workflow's issues
 
 # COMMAND ----------
 
-from govern import report
-
 (folder / "report").mkdir(parents=True, exist_ok=True)
-for env, md in reports.items():
-    (folder / "report" / f"{env}.md").write_text(md, encoding="utf-8")
+for scope, md in reports.items():
+    (folder / "report" / f"{scope}.md").write_text(md, encoding="utf-8")
 (folder / "report" / "summary.json").write_text(json.dumps(report.summary(scores), indent=2), encoding="utf-8")
-for env in reports:
-    print(reports[env])
+for scope in reports:
+    print(reports[scope])
 
 # COMMAND ----------
 
@@ -113,6 +131,16 @@ display(spark.table(f"{schema}.compliance").where(f"run_id = '{run_id}'")
 
 # COMMAND ----------
 
+# Which source found what: checks per scope and source.
+display(spark.sql(f"""
+SELECT environment, source, count(*) AS checks, count_if(status = 'PASS') AS passed,
+       count_if(status = 'FAIL') AS failed, count_if(status = 'EXCEPTION') AS exceptions,
+       count_if(status = 'ERROR') AS errors
+FROM {schema}.results WHERE run_id = '{run_id}' GROUP BY ALL ORDER BY environment, source"""))
+
+# COMMAND ----------
+
 display(spark.table(f"{schema}.results").where(f"run_id = '{run_id}' AND status <> 'PASS'")
-        .select("environment", "rule_id", "status", "severity", "object", "principal", "evidence", "remediation_sql")
+        .select("environment", "source", "rule_id", "status", "severity", "object", "principal", "evidence",
+                "remediation_sql")
         .orderBy("environment", "rule_id"))
