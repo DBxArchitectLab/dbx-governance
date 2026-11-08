@@ -22,7 +22,7 @@ def load(path):
 
 def validate(cfg):
     """Fail early, with the field that is wrong: a typo here would silently leave a workspace ungoverned."""
-    for key in ("estate", "standard", "output"):
+    for key in ("estate", "standard", "account", "system_tables", "output"):
         if not cfg.get(key):
             raise ConfigError(f"missing section: {key}")
     for env, e in cfg["estate"].items():
@@ -41,9 +41,26 @@ def validate(cfg):
             raise ConfigError(f"{where}.owner is missing: the group that remediates")
         if not e.get("storage_roots") or not all(str(r).startswith("abfss://") for r in e["storage_roots"]):
             raise ConfigError(f"{where}.storage_roots: one or more abfss:// roots")
+        if not e.get("sql_warehouse"):
+            raise ConfigError(f"{where}.sql_warehouse is missing: the warehouse the information schema queries run on")
     ids = [e["workspace_id"] for e in cfg["estate"].values()]
     if len(ids) != len(set(ids)):
         raise ConfigError("estate: the same workspace_id appears twice")
+    if "account" in cfg["estate"]:
+        raise ConfigError("estate: 'account' is reserved for the account scope")
+
+    acc = cfg["account"]
+    if not str(acc.get("host", "")).startswith("https://"):
+        raise ConfigError("account.host must be the account console URL (https://accounts.azuredatabricks.net)")
+    if not acc.get("owner"):
+        raise ConfigError("account.owner is missing: the group that remediates account findings")
+    for i, x in enumerate(acc.get("not_governed") or []):
+        if not isinstance(x.get("workspace_id"), int) or not x.get("reason"):
+            raise ConfigError(f"account.not_governed[{i}]: a numeric workspace_id and a reason")
+        if x["workspace_id"] in ids:
+            raise ConfigError(f"account.not_governed[{i}]: workspace {x['workspace_id']} is in the estate")
+    if not isinstance(cfg["system_tables"].get("lookback_days"), int) or cfg["system_tables"]["lookback_days"] < 1:
+        raise ConfigError("system_tables.lookback_days must be a positive number of days")
 
     std = cfg["standard"]
     for key in ("approved_groups", "service_principals", "admin_groups", "high_risk_privileges", "shared_catalogs",
@@ -73,7 +90,7 @@ def validate(cfg):
             raise ConfigError(f"{where}.rule: a rule ID, or a list of them")
         if not isinstance(x["expires"], date):
             raise ConfigError(f"{where}.expires must be a date (YYYY-MM-DD)")
-        if x["environment"] != "*" and x["environment"] not in cfg["estate"]:
+        if x["environment"] not in ("*", "account") and x["environment"] not in cfg["estate"]:
             raise ConfigError(f"{where}.environment {x['environment']!r} is not in the estate")
 
     for key in ("catalog", "schema", "volume"):
@@ -85,6 +102,11 @@ def matrix(cfg):
     """The GitHub Actions matrix: {"include": [...]}, one collector job per workspace."""
     return {"include": [{"environment": env, "workspace_id": e["workspace_id"], "host": e["host"], "tier": e["tier"]}
                         for env, e in cfg["estate"].items()]}
+
+
+def scopes(cfg):
+    """The remediation matrix: every workspace in the estate, and the account. One issue each."""
+    return {"include": [{"environment": env} for env in cfg["estate"]] + [{"environment": "account"}]}
 
 
 def service_principal_ids(cfg):

@@ -1,10 +1,13 @@
-"""Layer 4, act: the results as something an owner can work from. One Markdown report per workspace (the body of its
-governance issue and the run page), and a summary the workflow reads to open, update or close the issues.
+"""Layer 4, act: the results as something an owner can work from. One Markdown report per workspace and one for the
+account (the body of its governance issue and the run page), and a summary the workflow reads to open, update or
+close the issues.
 
 Reports carry object names, principals and fixes; they never carry data.
 """
 _RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 _ICON = {"FAIL": "🔴", "ERROR": "❌", "EXCEPTION": "🟡"}
+SOURCE_LABEL = {"workspace_api": "workspace API", "information_schema": "information schema",
+                "account_api": "account API", "system_tables": "system tables"}
 
 
 def _cell(text):
@@ -19,8 +22,9 @@ def markdown(score, results):
     open_ = sorted([r for r in results if r["status"] in ("FAIL", "ERROR")],
                    key=lambda r: (_RANK.get(r["severity"], 9), r["rule_id"], r["object"]))
     if open_:
-        lines += ["| | Severity | Rule | Evidence | Fix |", "| --- | --- | --- | --- | --- |"]
+        lines += ["| | Severity | Rule | Source | Evidence | Fix |", "| --- | --- | --- | --- | --- | --- |"]
         lines += [f"| {_ICON[r['status']]} | {r['severity']} | {r['rule_id']} {_cell(r['title'])} | "
+                  f"{SOURCE_LABEL.get(r.get('source'), r.get('source') or '')} | "
                   f"{_cell(r['evidence'])} | {_cell(r['remediation'] + (' ' + r['exception'] if r['exception'] else ''))} |"
                   for r in open_]
         sql = [r["remediation_sql"] for r in open_ if r["remediation_sql"]]

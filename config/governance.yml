@@ -1,12 +1,14 @@
 # Workspace governance: the estate, the standard, and the exceptions. The one file to change to scale out.
 #
-#   Add a workspace:      add an entry under estate (its ID, URL, catalog, tier and owner).
+#   Add a workspace:      add an entry under estate (its ID, URL, catalog, tier, owner and warehouse).
 #   Change the standard:  edit standard; every workspace is checked against it on the next run.
 #   Accept a violation:   add an exception, with a reason, who approved it and an end date.
 #
-# The governance workflow (.github/workflows/governance.yml) collects one snapshot per estate entry, and the
-# workspace-governance job (governance workspace) checks every snapshot against the standard. Nothing else names a
-# workspace. The rules themselves are code (src/govern/rules.py); what they expect is here.
+# Four metadata sources feed the same rules:
+#   workspace API, information schema   per workspace, by the governance workflow's collectors (GitHub Actions)
+#   account API                         once per run, by the workflow's account collector
+#   system tables                       in the governance workspace, by the workspace-governance notebook
+# The rules themselves are code (src/govern/rules.py); what they expect is here.
 
 # One entry per governed workspace. Observation runs per workspace; judgement runs once, centrally.
 estate:
@@ -18,6 +20,7 @@ estate:
     owner: DBX_Architect_Lab_Admin             # who remediates: the label on the workspace's governance issue
     storage_roots:                             # where this environment's data may live
       - abfss://dbx-architect-lab-dev@stdbxarchlabdev.dfs.core.windows.net/
+    sql_warehouse: sql-wh-small                # the information schema queries run here, inside the workspace
   prod:
     workspace_id: 7405604784566671
     host: https://adb-7405604784566671.11.azuredatabricks.net
@@ -26,6 +29,7 @@ estate:
     owner: DBX_Architect_Lab_Admin
     storage_roots:
       - abfss://dbx-architect-lab-prod@stdbxarchlabprod.dfs.core.windows.net/
+    sql_warehouse: sql-wh-small
   # uat:
   #   workspace_id: <workspace ID>
   #   host: https://adb-<workspace ID>.<n>.azuredatabricks.net
@@ -33,6 +37,19 @@ estate:
   #   tier: nonprod
   #   owner: <owning group>
   #   storage_roots: [abfss://dbx-architect-lab-uat@stdbxarchlabuat.dfs.core.windows.net/]
+  #   sql_warehouse: sql-wh-small
+
+# The account scope: the account API sees every workspace on the metastore, governed or not (EST-01, EST-02).
+account:
+  host: https://accounts.azuredatabricks.net
+  owner: DBX_Architect_Lab_Admin               # who remediates account findings: the "Governance: account" issue
+  not_governed:                                # workspaces outside the estate on purpose, each with its reason
+    - workspace_id: 7405610301840934
+      reason: The governance workspace itself; it is governed by this repository's deployment, not checked by it.
+
+# System tables, queried in the governance workspace for every workspace at once (ISO-02, CMP-04).
+system_tables:
+  lookback_days: 7
 
 # The enterprise standard: the expected state, as data. Rules read it; collectors never do.
 standard:
@@ -62,13 +79,14 @@ standard:
     nonprod: {}
 
 # Explicit, time-bound exceptions. A matching failure becomes EXCEPTION until the end date, then FAIL again.
-# object and principal are patterns (* matches anything); environment "*" means every workspace.
+# object and principal are patterns (* matches anything); environment "*" means every workspace, "account" the
+# account scope.
 exceptions:
-  - rule: [IAM-01, IAM-03]                     # one rule, or a list
+  - rule: [IAM-01, IAM-03, IAM-04]             # one rule, or a list
     environment: "*"
     object: "*"
     principal: dbxarchitectlab@gmail.com
-    reason: The lab owner's personal grants in catalog-config.yaml, until the lab has an IdP group for its users.
+    reason: The lab owner's personal access, until the lab has an IdP group for its users.
     approved_by: DBX_Architect_Lab_Admin
     expires: 2027-03-31
 

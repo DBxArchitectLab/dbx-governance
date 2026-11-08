@@ -2,15 +2,18 @@ name: Workspace governance
 # The run's title in the Actions list: scheduled, or who started it.
 run-name: "${{ github.event_name == 'schedule' && 'Governance check (daily)' || format('Governance check (@{0})', github.actor) }}"
 
-# On demand (Actions › Workspace governance › Run workflow): every workspace in config/governance.yml checked against
-# the standard.
-#   estate     read the estate: one collector per workspace
-#   collect    (per workspace) read its catalogs, grants, owners, storage, compute, jobs and settings through its API:
-#              read-only, one snapshot (JSON). Observation only; no rules here.
-#   validate   upload the snapshots and the standard to the governance workspace and run the workspace-governance job:
-#              inventory, results and compliance tables, and one report per workspace
-#   remediate  (per workspace) open or update the issue "Governance: <environment>" for its owner, or close it when
-#              the workspace is compliant again
+# On demand (Actions › Workspace governance › Run workflow): every workspace in config/governance.yml, and the
+# account, checked against the standard. Four metadata sources:
+#   estate           read the estate: one collector per workspace
+#   collect          (per workspace) workspace API (catalogs, grants, owners, storage, compute, jobs, settings) and
+#                    information schema (tables, views, their owners and grants, on the workspace's own warehouse):
+#                    read-only, one snapshot (JSON). Observation only; no rules here.
+#   collect-account  (once) account API: the workspaces on each metastore, and each workspace's admins
+#   validate         upload the snapshots and the standard to the governance workspace and run the workspace-governance
+#                    notebook: it adds the system tables, judges, and writes the inventory, results and compliance
+#                    tables, and one report per scope
+#   remediate        (per workspace, and the account) open or update the issue "Governance: <scope>" for its owner, or
+#                    close it when the scope is compliant again
 on:
   # Off for now, like the drift check. To run it every morning, uncomment these two lines.
   # schedule:
@@ -31,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.config.outputs.matrix }}
+      scopes: ${{ steps.config.outputs.scopes }}
       volume: /Volumes/${{ steps.config.outputs.catalog }}/${{ steps.config.outputs.schema }}/${{ steps.config.outputs.volume }}
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +47,7 @@ jobs:
           PYTHONPATH: src
         run: |
           echo "matrix=$(python -m govern.cli matrix --config config/governance.yml)" >> "$GITHUB_OUTPUT"
+          echo "scopes=$(python -m govern.cli scopes --config config/governance.yml)" >> "$GITHUB_OUTPUT"
           python -m govern.cli output --config config/governance.yml >> "$GITHUB_OUTPUT"
           python -m govern.cli matrix --config config/governance.yml \
             | jq -r '.include[] | "- \(.environment) (\(.tier)): \(.host)"' | tee -a "$GITHUB_STEP_SUMMARY"
@@ -52,7 +57,7 @@ jobs:
     needs: estate
     runs-on: ubuntu-latest
     # The drift environment's service principal (sp-dbx-platform-infra) can already read every workspace: the drift
-    # plans use it the same way. The collector only sends GET requests.
+    # plans use it the same way. The collector only sends GET requests and SELECT statements.
     environment: drift
     strategy:
       fail-fast: false
@@ -79,9 +84,39 @@ jobs:
           name: snapshot-${{ matrix.environment }}
           path: snapshots/
 
+  collect-account:
+    name: Collect account
+    needs: estate
+    runs-on: ubuntu-latest
+    # The same service principal, signed in to the account console: it is an account admin (it manages the
+    # metastore). Only GET requests.
+    environment: drift
+    env:
+      ARM_CLIENT_ID: ${{ secrets.SP_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.SP_CLIENT_SECRET }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      DATABRICKS_ACCOUNT_ID: ${{ secrets.DATABRICKS_ACCOUNT_ID }}
+      DATABRICKS_AUTH_TYPE: azure-client-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml databricks-sdk
+      - name: Snapshot the account
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m govern.cli collect-account --config config/governance.yml --out snapshots/account.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-account
+          path: snapshots/
+
   validate:
     name: Validate in the governance workspace
-    needs: [estate, collect]
+    needs: [estate, collect, collect-account]
     if: always() && needs.estate.result == 'success'
     runs-on: ubuntu-latest
     environment: governance
@@ -125,7 +160,7 @@ jobs:
       issues: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.estate.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.estate.outputs.scopes) }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
