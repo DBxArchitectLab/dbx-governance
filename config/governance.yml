@@ -20,7 +20,8 @@ estate:
     owner: DBX_Architect_Lab_Admin             # who remediates: the label on the workspace's governance issue
     storage_roots:                             # where this environment's data may live
       - abfss://dbx-architect-lab-dev@stdbxarchlabdev.dfs.core.windows.net/
-    sql_warehouse: sql-wh-small                # the information schema queries run here, inside the workspace
+    sql_warehouse: Serverless Starter Warehouse  # the information schema queries run here, inside the workspace;
+                                               # the name must match exactly (SQL Warehouses in the workspace)
   prod:
     workspace_id: 7405604784566671
     host: https://adb-7405604784566671.11.azuredatabricks.net
@@ -29,7 +30,7 @@ estate:
     owner: DBX_Architect_Lab_Admin
     storage_roots:
       - abfss://dbx-architect-lab-prod@stdbxarchlabprod.dfs.core.windows.net/
-    sql_warehouse: sql-wh-small
+    sql_warehouse: Serverless Starter Warehouse
   # uat:
   #   workspace_id: <workspace ID>
   #   host: https://adb-<workspace ID>.<n>.azuredatabricks.net
@@ -37,7 +38,7 @@ estate:
   #   tier: nonprod
   #   owner: <owning group>
   #   storage_roots: [abfss://dbx-architect-lab-uat@stdbxarchlabuat.dfs.core.windows.net/]
-  #   sql_warehouse: sql-wh-small
+  #   sql_warehouse: Serverless Starter Warehouse
 
 # The account scope: the account API sees every workspace on the metastore, governed or not (EST-01, EST-02).
 account:

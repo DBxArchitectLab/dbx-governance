@@ -170,7 +170,7 @@ estate:
     tier: nonprod                  # which rules apply, at which severity
     owner: <owning group>          # who gets the issue
     storage_roots: [abfss://dbx-architect-lab-uat@stdbxarchlabuat.dfs.core.windows.net/]
-    sql_warehouse: sql-wh-small    # the information schema queries run here
+    sql_warehouse: Serverless Starter Warehouse    # the information schema queries run here (exact name)
 ```
 
 Until then, EST-01 reports any workspace on the metastore that is neither in the estate nor in `account.not_governed`:
@@ -193,8 +193,9 @@ is made and how the work is spread, not the rules:
 The collectors use the `drift` GitHub environment (the drift workflow's service principal, `sp-dbx-platform-infra`,
 which can already read every workspace and the account, with `DATABRICKS_ACCOUNT_ID`), and the validate step uses the
 `governance` environment. Nothing new to add in GitHub. Then:
-1. **Information schema:** `sp-dbx-platform-infra` needs CAN USE on `estate.<env>.sql_warehouse` in each workspace (it
-   created the warehouses, so it already has it).
+1. **Information schema:** the queries run on `estate.<env>.sql_warehouse`, here the Serverless Starter Warehouse
+   that Databricks creates in each workspace. `sp-dbx-platform-infra` needs CAN USE on it; as a workspace admin it
+   already has it. If a workspace has no such warehouse, or it was renamed, set the name it has.
 2. **System tables:** as a metastore admin, let `sp-dbx-governance` read the two tables:
    ```sql
    GRANT USE SCHEMA ON SCHEMA system.access TO `d81cb8b1-92e7-4ab2-ac47-0143a2a1d6fc`;   -- already there for drift
