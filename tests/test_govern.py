@@ -128,7 +128,7 @@ PROD_API = {
          "autotermination_minutes": 0, "creator_user_name": "jane@contoso.com"},
         {"cluster_id": "3", "cluster_name": "job-123-run-1", "cluster_source": "JOB"}]},
     "/api/2.0/policies/clusters/list": {"policies": [{"policy_id": "P1", "name": "Shared Compute"}]},
-    "/api/2.0/sql/warehouses": {"warehouses": [{"id": "w1", "name": "sql-wh-small", "auto_stop_mins": 20}]},
+    "/api/2.0/sql/warehouses": {"warehouses": [{"id": "w1", "name": "Serverless Starter Warehouse", "auto_stop_mins": 10}]},
     "/api/2.2/jobs/list": lambda q: ({"jobs": [{"job_id": 1, "creator_user_name": "x",
                                                 "settings": {"name": "silver", "run_as":
                                                              {"service_principal_name": LAKEHOUSE_SP}}}],
@@ -375,7 +375,7 @@ def test_compute_and_jobs(prod_results):
     assert {r["object"]: r["status"] for r in by_rule(prod_results, "CMP-02")} == {
         "shared-analytics": "PASS", "jane-quick-test": "FAIL"}
     assert {r["object"]: r["status"] for r in by_rule(prod_results, "CMP-03")} == {
-        "shared-analytics": "PASS", "jane-quick-test": "FAIL", "sql-wh-small": "PASS"}
+        "shared-analytics": "PASS", "jane-quick-test": "FAIL", "Serverless Starter Warehouse": "PASS"}
     assert {r["object"]: r["status"] for r in by_rule(prod_results, "JOB-01")} == {
         "silver": "PASS", "jane-adhoc": "FAIL"}
     assert [r["status"] for r in by_rule(prod_results, "WSC-01")] == ["PASS"]
